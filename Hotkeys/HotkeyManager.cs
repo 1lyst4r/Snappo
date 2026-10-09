@@ -3,6 +3,7 @@ using System;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Snappo.Interop;
@@ -20,11 +21,24 @@ internal sealed class HotkeyManager : IDisposable
 
     private const int MouseDataOffset = 8;
 
+    private const int UpdateHooksMessage = 0x8001;   // WM_APP + 1
+    private const int QuitMessage = 0x0012;          // WM_QUIT
+
     private readonly Dispatcher uiDispatcher;
-    private readonly Dictionary<HotkeyAction, HotkeyTrigger> triggersByAction = new();
+    private readonly Dictionary<HotkeyAction, HotkeyTrigger> triggersByAction = new();   // UI thread only
     private readonly NativeMethods.LowLevelHookCallback keyboardCallback;   // kept in fields so the GC can't collect them
     private readonly NativeMethods.LowLevelHookCallback mouseCallback;
 
+    // The hooks live on their own thread with its own message loop, so a busy UI thread
+    // can never lag the keyboard system-wide or make Windows silently drop the hook.
+    private readonly Thread hookThread;
+    private readonly AutoResetEvent hookThreadAnswered = new(false);
+    private uint hookThreadId;
+    private int hookErrorCode;
+
+    private volatile KeyValuePair<HotkeyAction, HotkeyTrigger>[] activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
+
+    // Only touched on the hook thread.
     private IntPtr keyboardHook = IntPtr.Zero;
     private IntPtr mouseHook = IntPtr.Zero;
     private int swallowedKeyCode;                                   // lets us also swallow the matching key-up and auto-repeats
@@ -43,37 +57,82 @@ internal sealed class HotkeyManager : IDisposable
         this.uiDispatcher = uiDispatcher;
         keyboardCallback = OnKeyboardEvent;
         mouseCallback = OnMouseEvent;
+
+        // Windows makes every mouse/keyboard event in the system wait for our hook, so this thread must
+        // always get the CPU right away, even right after boot when everything else is starting up.
+        hookThread = new Thread(RunHookThread) { IsBackground = true, Name = "Snappo hotkeys", Priority = ThreadPriority.Highest };
+        hookThread.Start();
+        hookThreadAnswered.WaitOne();   // wait until its message queue exists
     }
 
     public void SetTrigger(HotkeyAction action, HotkeyTrigger trigger)
     {
         triggersByAction[action] = trigger;
-        InstallOnlyTheHooksWeNeed();
+        activeTriggers = triggersByAction.ToArray();
+        UpdateHooksOnHookThread();
     }
 
     public void Dispose()
     {
         triggersByAction.Clear();
-        InstallOnlyTheHooksWeNeed();
+        activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
+        NativeMethods.PostThreadMessage(hookThreadId, QuitMessage, IntPtr.Zero, IntPtr.Zero);
+        hookThread.Join(1000);
+    }
+
+    private void UpdateHooksOnHookThread()
+    {
+        hookErrorCode = 0;
+        if (!NativeMethods.PostThreadMessage(hookThreadId, UpdateHooksMessage, IntPtr.Zero, IntPtr.Zero))
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not reach the hotkey thread.");
+        }
+
+        hookThreadAnswered.WaitOne();
+
+        if (hookErrorCode != 0)
+        {
+            throw new Win32Exception(hookErrorCode, "Could not install the global hotkey hook.");
+        }
+    }
+
+    private void RunHookThread()
+    {
+        hookThreadId = NativeMethods.GetCurrentThreadId();
+        NativeMethods.PeekMessage(out _, IntPtr.Zero, 0, 0, 0);   // creates this thread's message queue
+        hookThreadAnswered.Set();
+
+        while (NativeMethods.GetMessage(out NativeMethods.ThreadMessage message, IntPtr.Zero, 0, 0) > 0)
+        {
+            if (message.Message == UpdateHooksMessage)
+            {
+                InstallOnlyTheHooksWeNeed();
+                hookThreadAnswered.Set();
+            }
+        }
+
+        activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
+        InstallOnlyTheHooksWeNeed();   // removes both hooks
     }
 
     private void InstallOnlyTheHooksWeNeed()
     {
-        bool needsKeyboardHook = triggersByAction.Values.Any(trigger => !trigger.UsesMouse);
-        bool needsMouseHook = triggersByAction.Values.Any(trigger => trigger.UsesMouse);
+        KeyValuePair<HotkeyAction, HotkeyTrigger>[] triggers = activeTriggers;
+        bool needsKeyboardHook = triggers.Any(pair => !pair.Value.UsesMouse);
+        bool needsMouseHook = triggers.Any(pair => pair.Value.UsesMouse);
 
         keyboardHook = UpdateHook(keyboardHook, needsKeyboardHook, NativeMethods.KeyboardHookId, keyboardCallback);
         mouseHook = UpdateHook(mouseHook, needsMouseHook, NativeMethods.MouseHookId, mouseCallback);
     }
 
-    private static IntPtr UpdateHook(IntPtr currentHook, bool isNeeded, int hookId, NativeMethods.LowLevelHookCallback callback)
+    private IntPtr UpdateHook(IntPtr currentHook, bool isNeeded, int hookId, NativeMethods.LowLevelHookCallback callback)
     {
         if (isNeeded && currentHook == IntPtr.Zero)
         {
             IntPtr newHook = NativeMethods.SetWindowsHookEx(hookId, callback, NativeMethods.GetModuleHandle(null), 0);
             if (newHook == IntPtr.Zero)
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not install the global hotkey hook.");
+                hookErrorCode = Marshal.GetLastWin32Error();
             }
 
             return newHook;
@@ -129,7 +188,7 @@ internal sealed class HotkeyManager : IDisposable
 
     private bool TryFindAction(Key key, ModifierKeys modifiers, out HotkeyAction action)
     {
-        foreach ((HotkeyAction candidateAction, HotkeyTrigger trigger) in triggersByAction)
+        foreach ((HotkeyAction candidateAction, HotkeyTrigger trigger) in activeTriggers)
         {
             if (!trigger.UsesMouse && trigger.Key == key && trigger.Modifiers == modifiers)
             {
@@ -176,7 +235,7 @@ internal sealed class HotkeyManager : IDisposable
 
     private bool TryFindAction(SideMouseButton button, ModifierKeys modifiers, out HotkeyAction action)
     {
-        foreach ((HotkeyAction candidateAction, HotkeyTrigger trigger) in triggersByAction)
+        foreach ((HotkeyAction candidateAction, HotkeyTrigger trigger) in activeTriggers)
         {
             if (trigger.UsesMouse && trigger.MouseButton == button && trigger.Modifiers == modifiers)
             {

@@ -18,7 +18,10 @@ internal static class SettingsStore
             if (File.Exists(SettingsFilePath))
             {
                 string json = File.ReadAllText(SettingsFilePath);
-                return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                AppSettings settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                settings.Hotkeys ??= new();   // "Hotkeys": null in a hand-edited file
+                settings.SaveFolder ??= AppSettings.DefaultSaveFolder;
+                return settings;
             }
         }
         catch (Exception)
@@ -31,6 +34,10 @@ internal static class SettingsStore
     public static void Save(AppSettings settings)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsFilePath)!);
-        File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(settings, JsonOptions));
+
+        // Write to a temp file first so a crash or full disk mid-write can't leave a half-written settings file.
+        string tempPath = SettingsFilePath + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(settings, JsonOptions));
+        File.Move(tempPath, SettingsFilePath, overwrite: true);
     }
 }

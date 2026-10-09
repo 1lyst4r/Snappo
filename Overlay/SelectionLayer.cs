@@ -9,7 +9,7 @@ internal sealed class SelectionLayer : FrameworkElement
 {
     private const double HandleSize = 8;
 
-    private static readonly Brush DimBrush = CreateFrozenBrush(Color.FromArgb(EditorDefaults.DimAmount, 0, 0, 0));
+    public static readonly Brush DimBrush = CreateFrozenBrush(Color.FromArgb(EditorDefaults.DimAmount, 0, 0, 0));
     private static readonly Brush LabelBackgroundBrush = CreateFrozenBrush(Color.FromArgb(200, 20, 20, 20));
     private static readonly Pen OutlinePen = CreateOutlinePen();
     private static readonly Typeface LabelTypeface = new("Segoe UI");
@@ -33,20 +33,13 @@ internal sealed class SelectionLayer : FrameworkElement
 
     protected override void OnRender(DrawingContext drawing)
     {
-        var wholeScreen = new Rect(0, 0, ActualWidth, ActualHeight);
-
+        // The dimming itself is a separate static layer; this one only draws the outline, handles and size label.
         if (selection is not Rect selectedArea)
         {
-            drawing.DrawRectangle(DimBrush, null, wholeScreen);
             return;
         }
 
         double cornerRadius = EditorDefaults.SelectionCornerRadius;
-
-        var dimmedArea = new GeometryGroup { FillRule = FillRule.EvenOdd };
-        dimmedArea.Children.Add(new RectangleGeometry(wholeScreen));
-        dimmedArea.Children.Add(new RectangleGeometry(selectedArea, cornerRadius, cornerRadius));
-        drawing.DrawGeometry(DimBrush, null, dimmedArea);
 
         Rect outlineArea = selectedArea;
         outlineArea.Inflate(0.5, 0.5);

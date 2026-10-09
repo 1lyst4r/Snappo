@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Snappo.Hotkeys;
+using Snappo.Interop;
 
 namespace Snappo.Settings;
 
@@ -62,6 +63,7 @@ public partial class SettingsWindow : Window
         FormatComboBox.SelectionChanged += (_, _) => UpdateQualityControls();
         QualitySlider.ValueChanged += (_, _) => UpdateQualityControls();
 
+        SourceInitialized += (_, _) => RenderModes.UseSoftware(this);
         Closed += (_, _) => hotkeyManager.IsPaused = false;
     }
 
@@ -117,6 +119,15 @@ public partial class SettingsWindow : Window
         e.Handled = true;
 
         Key releasedKey = NormalizeKey(e);
+
+        // Windows never sends a key-down for PrintScreen, only the key-up.
+        if (releasedKey == Key.Snapshot)
+        {
+            modifierBeingHeld = null;
+            TryAcceptTrigger(HotkeyTrigger.ForKey(Key.Snapshot, Keyboard.Modifiers));
+            return;
+        }
+
         if (modifierBeingHeld == releasedKey)
         {
             modifierBeingHeld = null;
@@ -232,7 +243,7 @@ public partial class SettingsWindow : Window
         updatedSettings.ShowSaveNotification = NotificationCheckBox.IsChecked == true;
         updatedSettings.KeepSelectedAreaPosition = KeepSelectionCheckBox.IsChecked == true;
         updatedSettings.CaptureCursor = CaptureCursorCheckBox.IsChecked == true;
-        updatedSettings.CaptureDelaySeconds = CaptureDelayOptions[CaptureDelayComboBox.SelectedIndex];
+        updatedSettings.CaptureDelaySeconds = CaptureDelayOptions[Math.Max(0, CaptureDelayComboBox.SelectedIndex)];
         updatedSettings.ImageFormat = FormatComboBox.SelectedIndex == JpegFormatIndex ? SaveImageFormat.Jpeg : SaveImageFormat.Png;
         updatedSettings.JpegQuality = (int)QualitySlider.Value;
 

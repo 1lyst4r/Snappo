@@ -4,13 +4,12 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
-    <!-- WinForms is only used for the tray icon (WPF has no built-in NotifyIcon). -->
-    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
-    <!-- WPF + WinForms together create ambiguous type names, so every file lists its own usings. -->
     <ImplicitUsings>disable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.1.0</Version>
+    <Version>1.2.1</Version>
+    <!-- Other copies of the source (git clone, old QuickSnap project) and installer output live in subfolders; never compile them. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Snappo\**;QuickSnap\**;installer\**</DefaultItemExcludes>
     <!-- Keep idle memory and background threads low. -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
@@ -25,14 +24,16 @@
   </ItemGroup>
 
   <!--
-    Release builds are pre-compiled (ReadyToRun) so the app starts fast and the first screenshot isn't slow.
+    Release builds are a single small Snappo.exe that uses the shared .NET 8 Desktop Runtime
+    (the installer installs the runtime if it's missing). Pre-compiled (ReadyToRun) so it starts fast.
     Just run:  dotnet publish -c Release
-    (Release restores one extra package the first time, so it needs internet once.)
   -->
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
     <PublishReadyToRun>true</PublishReadyToRun>
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
 </Project>

@@ -11,6 +11,7 @@ using System.Windows.Threading;
 using Snappo.Capture;
 using Snappo.Editor;
 using Snappo.Hotkeys;
+using Snappo.Interop;
 using Snappo.Overlay;
 using Snappo.Settings;
 using Snappo.Tray;
@@ -27,6 +28,8 @@ public partial class App : Application
     private SettingsWindow? openSettingsWindow;
     private bool isCapturePending;
 
+    internal static bool IsExiting { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -39,6 +42,7 @@ public partial class App : Application
         }
 
         DispatcherUnhandledException += OnUnexpectedError;
+        RenderModes.ChooseForProcess();
 
         settings = SettingsStore.Load();
         trayIcon = new TrayIcon(
@@ -46,7 +50,7 @@ public partial class App : Application
             continueEditing: ContinueEditingLastScreenshot,
             openScreenshotsFolder: OpenScreenshotsFolder,
             openSettings: ShowSettings,
-            exitApp: () => Shutdown());
+            exitApp: ExitApp);
 
         hotkeyManager = new HotkeyManager(Dispatcher);
         hotkeyManager.ActionTriggered += OnHotkeyTriggered;
@@ -64,8 +68,21 @@ public partial class App : Application
         Dispatcher.InvokeAsync(RunStartupWarmUp, DispatcherPriority.ApplicationIdle);
     }
 
+    private void ExitApp()
+    {
+        IsExiting = true;
+        Shutdown();
+    }
+
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        IsExiting = true;   // Windows is logging off: let every window close
+        base.OnSessionEnding(e);
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
+        IsExiting = true;
         hotkeyManager?.Dispose();
         trayIcon?.Dispose();
 
@@ -106,14 +123,14 @@ public partial class App : Application
 
         try
         {
+            // No "taking a screenshot in N seconds" notification here: it would still be on screen and end up in the shot.
             int delaySeconds = settings.CaptureDelaySeconds;
             if (delaySeconds > 0)
             {
-                trayIcon.ShowInfo("Snappo", $"Taking a screenshot in {delaySeconds} seconds...");
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
             }
 
-            if (trayIcon is null) return;   // app could be shutting down mid-delay
+            if (CaptureSession.IsOpen) return;   // "continue editing" may have opened one during the delay
 
             await new CaptureSession(settings, trayIcon).StartAsync();
         }
@@ -129,7 +146,7 @@ public partial class App : Application
 
     private void ContinueEditingLastScreenshot()
     {
-        if (CaptureSession.IsOpen || trayIcon is null || LastCaptureMemory.Value is not LastCapture previous)
+        if (isCapturePending || CaptureSession.IsOpen || trayIcon is null || LastCaptureMemory.Value is not LastCapture previous)
         {
             return;
         }
@@ -161,7 +178,15 @@ public partial class App : Application
     private void OnSettingsSaved(AppSettings savedSettings)
     {
         settings = savedSettings;
-        ApplyHotkeySettings();
+
+        try
+        {
+            ApplyHotkeySettings();
+        }
+        catch (Win32Exception problem)
+        {
+            trayIcon?.ShowError("Hotkeys unavailable", problem.Message);
+        }
     }
 
     private void OpenScreenshotsFolder()
@@ -205,11 +230,8 @@ public partial class App : Application
         }
         finally
         {
-            warmupOverlay?.Close();
-
-            Dispatcher.InvokeAsync(
-                () => GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true),
-                DispatcherPriority.ApplicationIdle);
+            warmupOverlay?.CloseForGood();
+            MemoryTrimmer.TrimWhenIdle();
         }
     }
 

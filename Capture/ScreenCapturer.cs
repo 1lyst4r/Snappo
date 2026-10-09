@@ -6,7 +6,6 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Snappo.Interop;
-using WinFormsScreen = System.Windows.Forms.Screen;
 
 namespace Snappo.Capture;
 
@@ -19,13 +18,31 @@ internal static class ScreenCapturer
     {
         var shots = new List<MonitorShot>();
 
-        foreach (WinFormsScreen screen in WinFormsScreen.AllScreens)
+        foreach (Int32Rect bounds in GetMonitorBounds())
         {
-            var bounds = new Int32Rect(screen.Bounds.X, screen.Bounds.Y, screen.Bounds.Width, screen.Bounds.Height);
             shots.Add(new MonitorShot(bounds, CaptureRegion(bounds, includeCursor)));
         }
 
         return shots;
+    }
+
+    public static List<Int32Rect> GetMonitorBounds()
+    {
+        var allBounds = new List<Int32Rect>();
+
+        NativeMethods.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr _, ref NativeMethods.NativeRect _, IntPtr _) =>
+        {
+            var info = new NativeMethods.MonitorInfo { Size = Marshal.SizeOf<NativeMethods.MonitorInfo>() };
+            if (NativeMethods.GetMonitorInfo(monitor, ref info))
+            {
+                NativeMethods.NativeRect area = info.Monitor;
+                allBounds.Add(new Int32Rect(area.Left, area.Top, area.Right - area.Left, area.Bottom - area.Top));
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return allBounds;
     }
 
     public static void WarmUp()
@@ -93,7 +110,7 @@ internal static class ScreenCapturer
             bool copied = NativeMethods.BitBlt(
                 memoryContext, 0, 0, region.Width, region.Height,
                 screenContext, region.X, region.Y,
-                NativeMethods.CopySourceToDestination | NativeMethods.IncludeLayeredWindows);
+                NativeMethods.CopySourceToDestination);
 
             if (!copied)
             {

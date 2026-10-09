@@ -39,6 +39,9 @@ internal sealed class CaptureSession
 
     public AppSettings Settings => settings;
 
+    // True while reopening the last screenshot, so the overlay doesn't also apply the remembered selection.
+    public bool IsContinuingEdit { get; private set; }
+
     public static bool IsOpen => currentSession is not null;
 
     public static void AbortCurrentSession() => currentSession?.CloseAllOverlays();
@@ -91,7 +94,7 @@ internal sealed class CaptureSession
 
         foreach (Int32Rect bounds in pooledOverlays.Keys.Where(bounds => !currentBounds.Contains(bounds)).ToList())
         {
-            pooledOverlays[bounds].Close();
+            pooledOverlays[bounds].CloseForGood();
             pooledOverlays.Remove(bounds);
         }
     }
@@ -99,6 +102,7 @@ internal sealed class CaptureSession
     public void StartWithPreviousCapture(LastCapture previous)
     {
         currentSession = this;
+        IsContinuingEdit = true;
 
         try
         {
@@ -205,9 +209,8 @@ internal sealed class CaptureSession
 
         overlays.Clear();
         currentSession = null;
+        IsContinuingEdit = false;
 
-        Application.Current.Dispatcher.InvokeAsync(
-            () => GC.Collect(2, GCCollectionMode.Optimized, blocking: false, compacting: true),
-            DispatcherPriority.ApplicationIdle);
+        MemoryTrimmer.TrimWhenIdle();
     }
 }

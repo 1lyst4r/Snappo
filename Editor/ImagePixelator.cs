@@ -1,5 +1,5 @@
 using System;
-using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -22,46 +22,47 @@ internal static class ImagePixelator
         int height = source.PixelHeight;
         int stride = width * BytesPerPixel;
 
-        byte[] sourcePixels = new byte[stride * height];
-        source.CopyPixels(sourcePixels, stride, 0);
-
         int blocksAcross = (width + blockSize - 1) / blockSize;
         int blocksDown = (height + blockSize - 1) / blockSize;
         byte[] blockPixels = new byte[blocksAcross * blocksDown * BytesPerPixel];
 
-        Parallel.For(0, blocksDown, blockRow =>
+        // Read one band of rows at a time instead of copying the whole screenshot into one huge array.
+        byte[] band = new byte[stride * blockSize];
+        long[] totals = new long[blocksAcross * 3];
+
+        for (int blockRow = 0; blockRow < blocksDown; blockRow++)
         {
             int top = blockRow * blockSize;
-            int bottom = Math.Min(top + blockSize, height);
+            int rows = Math.Min(blockSize, height - top);
+            source.CopyPixels(new Int32Rect(0, top, width, rows), band, stride, 0);
+            Array.Clear(totals);
+
+            for (int y = 0; y < rows; y++)
+            {
+                int index = y * stride;
+                for (int x = 0; x < width; x++)
+                {
+                    int total = (x / blockSize) * 3;
+                    totals[total] += band[index];
+                    totals[total + 1] += band[index + 1];
+                    totals[total + 2] += band[index + 2];
+                    index += BytesPerPixel;
+                }
+            }
 
             for (int blockColumn = 0; blockColumn < blocksAcross; blockColumn++)
             {
-                int left = blockColumn * blockSize;
-                int right = Math.Min(left + blockSize, width);
-
-                long blueTotal = 0, greenTotal = 0, redTotal = 0;
-
-                for (int y = top; y < bottom; y++)
-                {
-                    int index = y * stride + left * BytesPerPixel;
-                    for (int x = left; x < right; x++)
-                    {
-                        blueTotal += sourcePixels[index];
-                        greenTotal += sourcePixels[index + 1];
-                        redTotal += sourcePixels[index + 2];
-                        index += BytesPerPixel;
-                    }
-                }
-
-                int pixelCount = (bottom - top) * (right - left);
+                int columns = Math.Min(blockSize, width - blockColumn * blockSize);
+                int pixelCount = rows * columns;
                 int outputIndex = (blockRow * blocksAcross + blockColumn) * BytesPerPixel;
+                int total = blockColumn * 3;
 
-                blockPixels[outputIndex] = (byte)(blueTotal / pixelCount);
-                blockPixels[outputIndex + 1] = (byte)(greenTotal / pixelCount);
-                blockPixels[outputIndex + 2] = (byte)(redTotal / pixelCount);
+                blockPixels[outputIndex] = (byte)(totals[total] / pixelCount);
+                blockPixels[outputIndex + 1] = (byte)(totals[total + 1] / pixelCount);
+                blockPixels[outputIndex + 2] = (byte)(totals[total + 2] / pixelCount);
                 blockPixels[outputIndex + 3] = 255;
             }
-        });
+        }
 
         BitmapSource result = BitmapSource.Create(
             blocksAcross, blocksDown, 96, 96, PixelFormats.Bgr32, null, blockPixels, blocksAcross * BytesPerPixel);
