@@ -39,6 +39,8 @@ internal sealed class AnnotationToolbar : Border
 
     public event Action<EditorTool?>? ToolChanged;
 
+    public event Action? PickPixel;
+    public event Action? CopyReport;
     public event Action? UndoClicked;
 
     public event Action? RedoClicked;
@@ -58,7 +60,7 @@ internal sealed class AnnotationToolbar : Border
         Padding = new Thickness(3);
         Cursor = Cursors.Arrow;
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new WrapPanel { Orientation = Orientation.Horizontal };
 
         foreach (ToolButtonInfo info in ToolButtons)
         {
@@ -87,6 +89,8 @@ internal sealed class AnnotationToolbar : Border
             row.Children.Add(CreateColorSwatch(color));
         }
 
+        row.Children.Add(CreateActionButton("Pick color and copy HEX (I)", "M3,12 L10,5 L12,7 L5,14 H3 Z M9,4 L13,8", () => PickPixel?.Invoke()));
+        row.Children.Add(CreateActionButton("Copy bug report (Ctrl+Shift+C)", "M3,2 H12 V14 H3 Z M5,5 H10 M5,8 H10 M5,11 H8", () => CopyReport?.Invoke()));
         Child = row;
 
         MouseLeftButtonDown += (_, args) => args.Handled = true;

@@ -31,7 +31,7 @@ Type: files; Name: "{app}\Snappo.pdb"
 
 [Files]
 ; Build first with:  dotnet publish -c Release   (from the Snappo project folder)
-Source: "..\Snappo\bin\Release\net8.0-windows\win-x64\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\bin\Release\net8.0-windows\win-x64\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

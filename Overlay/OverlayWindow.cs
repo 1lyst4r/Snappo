@@ -41,7 +41,7 @@ internal sealed class OverlayWindow : Window
 
     private MonitorShot monitorShot;
     private CaptureSession session;
-    private Lazy<BitmapSource> pixelatedScreenshot;
+    private Lazy<PixelatedImage> pixelatedScreenshot;
     private readonly Image backgroundImage;
     private readonly Image selectedAreaImage;       // the same screenshot again, undimmed, clipped to the selection
     private readonly Border dimLayer = new() { Background = SelectionLayer.DimBrush, IsHitTestVisible = false };
@@ -51,6 +51,7 @@ internal sealed class OverlayWindow : Window
     private readonly AnnotationLayer liveLayer;
     private readonly AnnotationToolbar toolbar = new();
     private readonly Canvas toolbarCanvas = new();
+    private readonly Grid surface;
 
     private readonly bool isWarmUp;
     private bool isClosingForGood;
@@ -68,25 +69,28 @@ internal sealed class OverlayWindow : Window
     private Point lastRawMousePosition;             // updated on every mouse move; lets a key event react without one
 
     // Space-to-move
+    private bool pickingPixel;
     private bool spaceHeld;
     private Point spaceMoveStartMouse;
     private Rect spaceMoveStartSelection;
 
     // Moving/resizing a placed selection
     private ResizeHandle draggedHandle = ResizeHandle.None;
+    private Point resizeAnchor;
     private bool isMovingSelection;
     private Point moveDragStartMouse;
     private Rect moveDragStartSelection;
 
-    public OverlayWindow(MonitorShot monitorShot, CaptureSession session, bool isWarmUp = false)
+    public OverlayWindow(MonitorShot monitorShot, CaptureSession session, Int32Rect? displayBounds = null, bool isWarmUp = false)
     {
         this.monitorShot = monitorShot;
+        MonitorBounds = displayBounds ?? monitorShot.Bounds;
         this.session = session;
         this.isWarmUp = isWarmUp;
 
         committedLayer = new AnnotationLayer(BuildRenderContext);
         liveLayer = new AnnotationLayer(BuildRenderContext);
-        pixelatedScreenshot = new Lazy<BitmapSource>(CreatePixelatedScreenshot);
+        pixelatedScreenshot = new Lazy<PixelatedImage>(CreatePixelatedScreenshot);
 
         backgroundImage = new Image { Source = monitorShot.Bitmap, Stretch = Stretch.Fill };
         RenderOptions.SetBitmapScalingMode(backgroundImage, BitmapScalingMode.NearestNeighbor);   // 1:1 pixels, no smoothing
@@ -97,6 +101,7 @@ internal sealed class OverlayWindow : Window
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         ShowInTaskbar = false;
+        ShowActivated = false;
         Topmost = true;
         Focusable = true;
         Background = Brushes.Black;
@@ -104,11 +109,14 @@ internal sealed class OverlayWindow : Window
         UseLayoutRounding = true;
         WindowStartupLocation = WindowStartupLocation.Manual;
 
-        Content = BuildLayout();
+        surface = BuildLayout();
+        Content = surface;
         committedLayer.Show(history.Applied);
         ShowSelection(null);
 
         history.Changed += OnHistoryChanged;
+        toolbar.PickPixel += BeginPicking;
+        toolbar.CopyReport += CopyBugReport;
         toolbar.ToolChanged += OnToolChanged;
         toolbar.UndoClicked += Undo;
         toolbar.RedoClicked += Redo;
@@ -119,30 +127,31 @@ internal sealed class OverlayWindow : Window
         toolbar.ShowColor(currentColor);
         toolbar.ShowFill(shapesAreFilled);
         toolbar.ShowTextSize(currentTextSize);
-
-        Loaded += (_, _) => OnShown();
     }
 
-    private void OnShown()
+    internal void ShowForCapture(Size? originalSize = null)
     {
-        PlaceOnMonitor();
-
-        if (!isWarmUp)
+        if (originalSize is Size size)
         {
-            Focus();
-
-            Dispatcher.InvokeAsync(RestoreRememberedSelection, DispatcherPriority.Loaded);
+            Content = null;
+            surface.Width = size.Width;
+            surface.Height = size.Height;
+            Content = new Viewbox { Child = surface, Stretch = Stretch.Uniform };
         }
+
+        Show();
+        PlaceOnMonitor();
+        UpdateLayout();
     }
 
     // Pooling
-    public Int32Rect MonitorBounds => monitorShot.Bounds;
+    public Int32Rect MonitorBounds { get; }
 
     internal void RearmForCapture(MonitorShot newShot, CaptureSession newSession)
     {
         monitorShot = newShot;
         session = newSession;
-        pixelatedScreenshot = new Lazy<BitmapSource>(CreatePixelatedScreenshot);
+        pixelatedScreenshot = new Lazy<PixelatedImage>(CreatePixelatedScreenshot);
         backgroundImage.Source = newShot.Bitmap;
         selectedAreaImage.Source = newShot.Bitmap;
 
@@ -155,9 +164,6 @@ internal sealed class OverlayWindow : Window
         toolbar.ShowColor(currentColor);
         toolbar.ShowFill(shapesAreFilled);
         toolbar.ShowTextSize(currentTextSize);
-
-        Show();
-        OnShown();
     }
 
     internal void CloseForGood()
@@ -173,7 +179,7 @@ internal sealed class OverlayWindow : Window
         if (!isClosingForGood && !isWarmUp && !App.IsExiting)
         {
             e.Cancel = true;     // e.g. Alt+F4: treat it like Esc instead of destroying a pooled window
-            session.Cancel();
+            Dispatcher.BeginInvoke(new Action(session.Cancel));
         }
     }
 
@@ -183,8 +189,16 @@ internal sealed class OverlayWindow : Window
         backgroundImage.Source = PlaceholderBitmap;
         selectedAreaImage.Source = PlaceholderBitmap;
         monitorShot = monitorShot with { Bitmap = PlaceholderBitmap };
-        pixelatedScreenshot = new Lazy<BitmapSource>(CreatePixelatedScreenshot);
+        pixelatedScreenshot = new Lazy<PixelatedImage>(CreatePixelatedScreenshot);
         Hide();
+
+        if (Content is Viewbox viewbox)
+        {
+            viewbox.Child = null;
+            surface.ClearValue(WidthProperty);
+            surface.ClearValue(HeightProperty);
+            Content = surface;
+        }
     }
 
     private static BitmapSource CreatePlaceholderBitmap()
@@ -195,12 +209,6 @@ internal sealed class OverlayWindow : Window
     }
 
     // Things CaptureSession needs
-    public bool ContainsScreenPoint(int x, int y)
-    {
-        Int32Rect bounds = monitorShot.Bounds;
-        return x >= bounds.X && x < bounds.X + bounds.Width && y >= bounds.Y && y < bounds.Y + bounds.Height;
-    }
-
     public void BringToFront()
     {
         NativeMethods.ForceToForeground(windowHandle);
@@ -211,6 +219,7 @@ internal sealed class OverlayWindow : Window
     public void ResetSelection()
     {
         // Clear every drag state before letting go of the mouse, so OnLostMouseCapture finds nothing to finish.
+        pickingPixel = false;
         phase = Phase.WaitingForSelection;
         annotationBeingDragged = null;
         textBeingTyped = null;
@@ -248,12 +257,12 @@ internal sealed class OverlayWindow : Window
     }
 
     // Window setup
-    private UIElement BuildLayout()
+    private Grid BuildLayout()
     {
         toolbar.Visibility = Visibility.Collapsed;
         toolbarCanvas.Children.Add(toolbar);
 
-        var layers = new Grid();
+        var layers = new Grid { ClipToBounds = true };
         layers.Children.Add(backgroundImage);
         layers.Children.Add(dimLayer);
         layers.Children.Add(selectedAreaImage);
@@ -268,19 +277,19 @@ internal sealed class OverlayWindow : Window
     {
         base.OnSourceInitialized(e);
         windowHandle = new WindowInteropHelper(this).Handle;
-        RenderModes.ChooseForOverlay(this, monitorShot.Bounds);
+        RenderModes.ChooseForOverlay(this, MonitorBounds);
         PlaceOnMonitor();
     }
 
     protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
     {
         base.OnDpiChanged(oldDpi, newDpi);
-        Dispatcher.InvokeAsync(PlaceOnMonitor, DispatcherPriority.Send);
+        Dispatcher.InvokeAsync(() => { if (IsVisible) PlaceOnMonitor(); }, DispatcherPriority.Send);
     }
 
     private void PlaceOnMonitor()
     {
-        Int32Rect bounds = monitorShot.Bounds;
+        Int32Rect bounds = MonitorBounds;
         NativeMethods.SetWindowPos(
             windowHandle, NativeMethods.TopmostWindowGroup,
             bounds.X, bounds.Y, bounds.Width, bounds.Height, NativeMethods.DoNotActivate);
@@ -288,17 +297,17 @@ internal sealed class OverlayWindow : Window
 
     // Units
 
-    private double PixelsPerUnitX => ActualWidth > 0 ? monitorShot.Bitmap.PixelWidth / ActualWidth : 1;
+    private double PixelsPerUnitX => surface.ActualWidth > 0 ? monitorShot.Bitmap.PixelWidth / surface.ActualWidth : 1;
 
-    private double PixelsPerUnitY => ActualHeight > 0 ? monitorShot.Bitmap.PixelHeight / ActualHeight : 1;
+    private double PixelsPerUnitY => surface.ActualHeight > 0 ? monitorShot.Bitmap.PixelHeight / surface.ActualHeight : 1;
 
     private Point SnapToWholePixels(Point point) => new(
         Math.Round(point.X * PixelsPerUnitX) / PixelsPerUnitX,
         Math.Round(point.Y * PixelsPerUnitY) / PixelsPerUnitY);
 
     private Point KeepInsideWindow(Point point) => new(
-        Math.Clamp(point.X, 0, ActualWidth),
-        Math.Clamp(point.Y, 0, ActualHeight));
+        Math.Clamp(point.X, 0, surface.ActualWidth),
+        Math.Clamp(point.Y, 0, surface.ActualHeight));
 
     private Point KeepInsideSelection(Point point) => new(
         Math.Clamp(point.X, selection.Left, selection.Right),
@@ -306,11 +315,11 @@ internal sealed class OverlayWindow : Window
 
     private RenderContext BuildRenderContext() => new(
         VisualTreeHelper.GetDpi(this).PixelsPerDip,
-        new Rect(0, 0, ActualWidth, ActualHeight),
+        new Rect(surface.RenderSize),
         pixelatedScreenshot,
         selection);
 
-    private BitmapSource CreatePixelatedScreenshot()
+    private PixelatedImage CreatePixelatedScreenshot()
     {
         int blockSizeInPixels = (int)Math.Round(EditorDefaults.BlurBlockSize * PixelsPerUnitX);
         return ImagePixelator.Pixelate(monitorShot.Bitmap, blockSizeInPixels);
@@ -320,7 +329,7 @@ internal sealed class OverlayWindow : Window
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
     {
         base.OnMouseLeftButtonDown(e);
-        Point mousePosition = e.GetPosition(this);
+        Point mousePosition = e.GetPosition(surface);
         lastRawMousePosition = mousePosition;
 
         switch (phase)
@@ -337,10 +346,38 @@ internal sealed class OverlayWindow : Window
 
     private void HandleAnnotatingClick(Point mousePosition)
     {
+        if (pickingPixel)
+        {
+            Point point = KeepInsideWindow(mousePosition);
+            int x = Math.Clamp((int)Math.Floor(point.X * PixelsPerUnitX), 0, monitorShot.Bitmap.PixelWidth - 1);
+            int y = Math.Clamp((int)Math.Floor(point.Y * PixelsPerUnitY), 0, monitorShot.Bitmap.PixelHeight - 1);
+            var area = new Rect(x / PixelsPerUnitX, y / PixelsPerUnitY, 1 / PixelsPerUnitX, 1 / PixelsPerUnitY);
+            var sampled = ScreenshotRenderer.Render(monitorShot.Bitmap, area,
+                selection.Contains(point) ? history.Applied : Array.Empty<Annotation>(), BuildRenderContext());
+            var converted = new FormatConvertedBitmap(sampled, PixelFormats.Bgra32, null, 0);
+            byte[] pixel = new byte[4];
+            converted.CopyPixels(new Int32Rect(0, 0, 1, 1), pixel, 4, 0);
+            Color color = Color.FromRgb(pixel[2], pixel[1], pixel[0]);
+            pickingPixel = false;
+            OnColorPicked(color);
+            toolbar.ShowColor(color);
+            UpdateCursor(point);
+            try { Clipboard.SetText($"#{color.R:X2}{color.G:X2}{color.B:X2}"); }
+            catch (System.Runtime.InteropServices.ExternalException) { MessageBox.Show(this, "Color selected. The clipboard is busy."); }
+            return;
+        }
         ResizeHandle handle = HitTestHandle(mousePosition);
         if (handle != ResizeHandle.None)
         {
             draggedHandle = handle;
+            moveDragStartSelection = selection;
+            resizeAnchor = handle switch
+            {
+                ResizeHandle.TopLeft => selection.BottomRight,
+                ResizeHandle.TopRight => selection.BottomLeft,
+                ResizeHandle.BottomLeft => selection.TopRight,
+                _ => selection.TopLeft,
+            };
             CaptureMouse();
             return;
         }
@@ -366,14 +403,16 @@ internal sealed class OverlayWindow : Window
 
     private ResizeHandle HitTestHandle(Point point)
     {
-        if (IsNearCorner(point, selection.TopLeft)) return ResizeHandle.TopLeft;
-        if (IsNearCorner(point, selection.TopRight)) return ResizeHandle.TopRight;
-        if (IsNearCorner(point, selection.BottomLeft)) return ResizeHandle.BottomLeft;
-        if (IsNearCorner(point, selection.BottomRight)) return ResizeHandle.BottomRight;
-        return ResizeHandle.None;
-
-        static bool IsNearCorner(Point point, Point corner) => (point - corner).Length <= HandleHitRadius;
+        bool left = point.X <= selection.Left + selection.Width / 2;
+        bool top = point.Y <= selection.Top + selection.Height / 2;
+        Point nearest = new(left ? selection.Left : selection.Right, top ? selection.Top : selection.Bottom);
+        if ((point - nearest).LengthSquared > HandleHitRadius * HandleHitRadius) return ResizeHandle.None;
+        return CornerHandle(left, top);
     }
+
+    private static ResizeHandle CornerHandle(bool left, bool top) =>
+        top ? (left ? ResizeHandle.TopLeft : ResizeHandle.TopRight)
+            : (left ? ResizeHandle.BottomLeft : ResizeHandle.BottomRight);
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
@@ -385,7 +424,11 @@ internal sealed class OverlayWindow : Window
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        Point mousePosition = e.GetPosition(this);
+        UpdateDragAt(e.GetPosition(surface));
+    }
+
+    private void UpdateDragAt(Point mousePosition)
+    {
         lastRawMousePosition = mousePosition;
 
         if (phase == Phase.DraggingSelection)
@@ -426,6 +469,7 @@ internal sealed class OverlayWindow : Window
 
         if (IsMouseCaptured)
         {
+            UpdateDragAt(e.GetPosition(surface));
             ReleaseMouseCapture();   // OnLostMouseCapture finishes the drag
         }
         else
@@ -450,6 +494,11 @@ internal sealed class OverlayWindow : Window
         else if (draggedHandle != ResizeHandle.None)
         {
             draggedHandle = ResizeHandle.None;
+            if (SelectionIsTooSmall)
+            {
+                selection = moveDragStartSelection;
+                ApplySelectionChange();
+            }
             RememberSelectionIfEnabled();
         }
         else if (isMovingSelection)
@@ -465,6 +514,7 @@ internal sealed class OverlayWindow : Window
 
     private void UpdateCursor(Point mousePosition)
     {
+        if (pickingPixel) { Cursor = Cursors.Cross; return; }
         ResizeHandle hoveredHandle = draggedHandle != ResizeHandle.None ? draggedHandle : HitTestHandle(mousePosition);
         if (hoveredHandle != ResizeHandle.None)
         {
@@ -539,21 +589,8 @@ internal sealed class OverlayWindow : Window
     private void UpdateResizingSelection(Point mousePosition)
     {
         Point point = SnapToWholePixels(KeepInsideWindow(mousePosition));
-
-        double left = selection.Left;
-        double top = selection.Top;
-        double right = selection.Right;
-        double bottom = selection.Bottom;
-
-        switch (draggedHandle)
-        {
-            case ResizeHandle.TopLeft: left = point.X; top = point.Y; break;
-            case ResizeHandle.TopRight: right = point.X; top = point.Y; break;
-            case ResizeHandle.BottomLeft: left = point.X; bottom = point.Y; break;
-            case ResizeHandle.BottomRight: right = point.X; bottom = point.Y; break;
-        }
-
-        selection = new Rect(new Point(left, top), new Point(right, bottom));   // sorts out which corner is which
+        selection = new Rect(resizeAnchor, point);
+        draggedHandle = CornerHandle(point.X < resizeAnchor.X, point.Y < resizeAnchor.Y);
         ApplySelectionChange();
     }
 
@@ -579,8 +616,8 @@ internal sealed class OverlayWindow : Window
     }
 
     private Point ClampTopLeftInsideWindow(Point topLeft, Size size) => new(
-        Math.Clamp(topLeft.X, 0, Math.Max(0, ActualWidth - size.Width)),
-        Math.Clamp(topLeft.Y, 0, Math.Max(0, ActualHeight - size.Height)));
+        Math.Clamp(topLeft.X, 0, Math.Max(0, surface.ActualWidth - size.Width)),
+        Math.Clamp(topLeft.Y, 0, Math.Max(0, surface.ActualHeight - size.Height)));
 
     private void ApplyShiftConstraintToActiveShape()
     {
@@ -590,13 +627,14 @@ internal sealed class OverlayWindow : Window
         }
     }
 
+    private bool SelectionIsTooSmall => selection.Width < EditorDefaults.MinimumSelectionSize
+                                        || selection.Height < EditorDefaults.MinimumSelectionSize;
+
     private void FinishSelection()
     {
         spaceHeld = false;   // dragging is over; a stale Space state must never leak into the Annotating phase
 
-        bool isJustAClick = selection.Width < EditorDefaults.MinimumSelectionSize
-                            || selection.Height < EditorDefaults.MinimumSelectionSize;
-        if (isJustAClick)
+        if (SelectionIsTooSmall)
         {
             ResetSelection();
             return;
@@ -632,19 +670,19 @@ internal sealed class OverlayWindow : Window
         EditorMemory.LastSelection = new RememberedSelection(monitorShot.Bounds, pixelArea);
     }
 
-    private void RestoreRememberedSelection()
+    internal bool RestoreRememberedSelection()
     {
-        if (isWarmUp || phase != Phase.WaitingForSelection || session.IsContinuingEdit
+        if (isWarmUp || phase != Phase.WaitingForSelection
             || !session.Settings.KeepSelectedAreaPosition)
         {
-            return;
+            return false;
         }
 
         if (EditorMemory.LastSelection is not RememberedSelection remembered
             || !remembered.MonitorBounds.Equals(monitorShot.Bounds)
-            || ActualWidth < 1 || ActualHeight < 1)
+            || surface.ActualWidth < 1 || surface.ActualHeight < 1)
         {
-            return;
+            return false;
         }
 
         Int32Rect area = remembered.PixelArea;
@@ -653,7 +691,7 @@ internal sealed class OverlayWindow : Window
                                       && area.Y + area.Height <= monitorShot.Bitmap.PixelHeight;
         if (!stillFitsOnThisMonitor)
         {
-            return;
+            return false;
         }
 
         session.NotifySelectionStarting(this);
@@ -662,14 +700,14 @@ internal sealed class OverlayWindow : Window
             area.Width / PixelsPerUnitX, area.Height / PixelsPerUnitY);
 
         FinishSelection();
-        BringToFront();   // the selection lives on this monitor, so this is where the keyboard shortcuts must go
+        return phase == Phase.Annotating;
     }
 
     private void SelectWholeMonitor()
     {
+        CommitActiveDrag();
         session.NotifySelectionStarting(this);
-        ResetSelection();   // drops any earlier selection, annotations and toolbar
-        selection = new Rect(0, 0, ActualWidth, ActualHeight);
+        selection = new Rect(surface.RenderSize);
         FinishSelection();
     }
 
@@ -696,11 +734,12 @@ internal sealed class OverlayWindow : Window
 
     private void PositionToolbar()
     {
-        toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        toolbar.MaxWidth = Math.Max(1, surface.ActualWidth - 2 * ToolbarScreenMargin);
+        toolbar.Measure(new Size(toolbar.MaxWidth, double.PositiveInfinity));
         Size toolbarSize = toolbar.DesiredSize;
 
         double left = selection.Left + (selection.Width - toolbarSize.Width) / 2;
-        double rightmostLeft = Math.Max(ToolbarScreenMargin, ActualWidth - toolbarSize.Width - ToolbarScreenMargin);
+        double rightmostLeft = Math.Max(ToolbarScreenMargin, surface.ActualWidth - toolbarSize.Width - ToolbarScreenMargin);
         left = Math.Clamp(left, ToolbarScreenMargin, rightmostLeft);
 
         double top = selection.Top - toolbarSize.Height - ToolbarGap;
@@ -708,7 +747,7 @@ internal sealed class OverlayWindow : Window
         {
             top = selection.Bottom + ToolbarGap;
 
-            bool fitsBelow = top + toolbarSize.Height <= ActualHeight - ToolbarScreenMargin;
+            bool fitsBelow = top + toolbarSize.Height <= surface.ActualHeight - ToolbarScreenMargin;
             if (!fitsBelow)
             {
                 top = selection.Bottom - toolbarSize.Height - ToolbarGap;
@@ -716,7 +755,8 @@ internal sealed class OverlayWindow : Window
         }
 
         Canvas.SetLeft(toolbar, Math.Round(left));
-        Canvas.SetTop(toolbar, Math.Round(top));
+        double lowestTop = Math.Max(0, surface.ActualHeight - toolbarSize.Height);
+        Canvas.SetTop(toolbar, Math.Round(Math.Clamp(top, 0, lowestTop)));
     }
 
     // Annotating
@@ -768,6 +808,8 @@ internal sealed class OverlayWindow : Window
         annotationBeingDragged = null;
 
         liveLayer.Show(Array.Empty<Annotation>());
+
+        if (finishedAnnotation is TwoPointAnnotation shape) shape.CommitConstraint(selection);
 
         if (finishedAnnotation.IsWorthKeeping)
         {
@@ -867,6 +909,14 @@ internal sealed class OverlayWindow : Window
                 e.Handled = true;
                 break;
 
+            case Key.I when !ctrlHeld && textBeingTyped is null && phase == Phase.Annotating:
+                BeginPicking();
+                e.Handled = true;
+                break;
+            case Key.C when ctrlHeld && shiftHeld && phase == Phase.Annotating:
+                CopyBugReport();
+                e.Handled = true;
+                break;
             case Key.C when ctrlHeld:
                 FinishWith(FinishAction.CopyToClipboard);
                 e.Handled = true;
@@ -951,6 +1001,12 @@ internal sealed class OverlayWindow : Window
     }
 
     // Actions
+    private void CommitActiveDrag()
+    {
+        FinishAnyDrag();
+        if (IsMouseCaptured) ReleaseMouseCapture();
+    }
+
     private void Undo()
     {
         if (textBeingTyped is not null)
@@ -968,18 +1024,45 @@ internal sealed class OverlayWindow : Window
         history.Redo();
     }
 
-    private void FinishWith(FinishAction action)
+    private void BeginPicking()
+    {
+        FinishTypedText();
+        pickingPixel = true;
+        Cursor = Cursors.Cross;
+    }
+
+    private void CopyBugReport()
+    {
+        var steps = new TextBox { AcceptsReturn = true, MinHeight = 70, TextWrapping = TextWrapping.Wrap };
+        var copy = new Button { Content = "Copy report and screenshot", IsDefault = true, Margin = new Thickness(0,8,0,0) };
+        var panel = new StackPanel { Margin = new Thickness(12) };
+        panel.Children.Add(new TextBlock { Text = "Steps to reproduce" });
+        panel.Children.Add(steps);
+        panel.Children.Add(copy);
+        var dialog = new Window { Owner = this, Title = "Copy bug report", Width = 380, SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner, Content = panel, ShowInTaskbar = false };
+        copy.Click += (_, _) => dialog.DialogResult = true;
+        dialog.Loaded += (_, _) => steps.Focus();
+        if (dialog.ShowDialog() != true) return;
+        string report = $"Source: {monitorShot.SourceApp}\nSnappo: {typeof(App).Assembly.GetName().Version}\nDisplay scale: {VisualTreeHelper.GetDpi(this).DpiScaleX:P0}\nSteps to reproduce:\n{steps.Text}";
+        Export(FinishAction.CopyToClipboard, report);
+    }
+
+    private void FinishWith(FinishAction action) => Export(action, null);
+
+    private void Export(FinishAction action, string? report)
     {
         if (phase != Phase.Annotating) return;
 
+        CommitActiveDrag();
         FinishTypedText();
 
         BitmapSource finalImage = ScreenshotRenderer.Render(
             monitorShot.Bitmap, selection, history.Applied, BuildRenderContext());
 
-        LastCaptureMemory.Value = new LastCapture(monitorShot, selection, new List<Annotation>(history.Applied));
+        LastCaptureMemory.Value = new LastCapture(monitorShot, surface.RenderSize, selection, new List<Annotation>(history.Applied));
 
-        session.Finish(finalImage, action);
+        session.Finish(finalImage, action, monitorShot.SourceApp, report);
     }
 
     internal void RestoreAnnotatedSelection(Rect restoredSelection, IReadOnlyList<Annotation> annotations)
@@ -1035,5 +1118,10 @@ internal sealed class OverlayWindow : Window
     {
         currentTextSize = size;
         EditorMemory.LastTextSize = size;
+        if (textBeingTyped is not null)
+        {
+            textBeingTyped.FontSize = size;
+            liveLayer.Refresh();
+        }
     }
 }

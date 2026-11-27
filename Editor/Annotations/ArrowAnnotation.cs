@@ -21,7 +21,7 @@ internal sealed class ArrowAnnotation : TwoPointAnnotation
 
     public override void Draw(DrawingContext drawing, RenderContext context)
     {
-        Point tip = ConstrainedEndPoint(context);
+        Point tip = ConstrainedEndPoint(context.SelectionBounds);
 
         Vector direction = tip - StartPoint;
         double length = direction.Length;

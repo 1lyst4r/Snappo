@@ -11,6 +11,8 @@ internal enum SaveImageFormat
 {
     Png,
     Jpeg,
+    WebpLossless,
+    WebpLossy,
 }
 
 internal sealed class AppSettings
@@ -25,6 +27,7 @@ internal sealed class AppSettings
     public string SaveFolder { get; set; } = DefaultSaveFolder;
 
     public int CaptureDelaySeconds { get; set; }
+    internal static readonly int[] CaptureDelayOptions = { 0, 3, 5, 10 };
 
     // Hotkeys
     public Dictionary<string, string> Hotkeys { get; set; } = new();
@@ -32,6 +35,9 @@ internal sealed class AppSettings
     // Format
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public SaveImageFormat ImageFormat { get; set; } = SaveImageFormat.Png;
+
+    public const string DefaultTemplate = "Screenshot {date} {time}";
+    public string FilenameTemplate { get; set; } = DefaultTemplate;
 
     public int JpegQuality { get; set; } = 90;
 
@@ -66,7 +72,7 @@ internal sealed class AppSettings
 
     public int GetJpegQualityInRange() => Math.Clamp(JpegQuality, 1, 100);
 
-    public string GetFileExtension() => ImageFormat == SaveImageFormat.Jpeg ? ".jpg" : ".png";
+    public string GetFileExtension() => ImageFormat switch { SaveImageFormat.Jpeg => ".jpg", SaveImageFormat.WebpLossless or SaveImageFormat.WebpLossy => ".webp", _ => ".png" };
 
     public AppSettings Clone() => new()
     {
@@ -77,6 +83,7 @@ internal sealed class AppSettings
         CaptureDelaySeconds = CaptureDelaySeconds,
         Hotkeys = new Dictionary<string, string>(Hotkeys),
         ImageFormat = ImageFormat,
+        FilenameTemplate = FilenameTemplate,
         JpegQuality = JpegQuality,
     };
 }

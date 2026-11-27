@@ -9,7 +9,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Version>1.2.1</Version>
     <!-- Other copies of the source (git clone, old QuickSnap project) and installer output live in subfolders; never compile them. -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);Snappo\**;QuickSnap\**;installer\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Snappo\**;QuickSnap\**;installer\**;tests\**</DefaultItemExcludes>
     <!-- Keep idle memory and background threads low. -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
@@ -21,6 +21,8 @@
   <!-- Tells the GC to aggressively trim the working set back to the OS instead of holding onto free heap space. -->
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
+    <PackageReference Include="SkiaSharp" Version="3.119.1" />
+    <InternalsVisibleTo Include="Snappo.Regression" />
   </ItemGroup>
 
   <!--
@@ -31,6 +33,7 @@
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <PublishSingleFile>true</PublishSingleFile>
     <PublishReadyToRun>true</PublishReadyToRun>
     <DebugType>none</DebugType>

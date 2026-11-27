@@ -52,6 +52,8 @@ public partial class App : Application
             openSettings: ShowSettings,
             exitApp: ExitApp);
 
+        trayIcon.ImportRequested += ImportImage;
+
         hotkeyManager = new HotkeyManager(Dispatcher);
         hotkeyManager.ActionTriggered += OnHotkeyTriggered;
         hotkeyManager.ShouldPassKeysThrough = () => CaptureSession.IsOpen;   // during a capture every key belongs to the overlay
@@ -90,6 +92,7 @@ public partial class App : Application
         {
             singleInstanceMutex?.ReleaseMutex();
         }
+        singleInstanceMutex?.Dispose();
 
         base.OnExit(e);
     }
@@ -130,7 +133,7 @@ public partial class App : Application
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
             }
 
-            if (CaptureSession.IsOpen) return;   // "continue editing" may have opened one during the delay
+            if (IsExiting || CaptureSession.IsOpen) return;
 
             await new CaptureSession(settings, trayIcon).StartAsync();
         }
@@ -161,6 +164,46 @@ public partial class App : Application
         }
     }
 
+    private void ImportImage(bool fromClipboard)
+    {
+        if (CaptureSession.IsOpen || isCapturePending || trayIcon is null) return;
+        isCapturePending = true;
+        try
+        {
+            BitmapSource image;
+            string name;
+            if (fromClipboard)
+            {
+                image = Clipboard.GetImage() ?? throw new InvalidOperationException("Copy an image to the clipboard first.");
+                name = "Clipboard";
+            }
+            else
+            {
+                var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "Images|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif;*.tif;*.tiff|All files|*.*" };
+                if (dialog.ShowDialog() != true) return;
+                using var file = File.OpenRead(dialog.FileName);
+                if (string.Equals(Path.GetExtension(dialog.FileName), ".webp", StringComparison.OrdinalIgnoreCase))
+                {
+                    using var decoded = SkiaSharp.SKBitmap.Decode(file) ?? throw new InvalidDataException("Invalid WebP image.");
+                    using var bgra = decoded.Copy(SkiaSharp.SKColorType.Bgra8888);
+                    image = BitmapSource.Create(bgra.Width, bgra.Height, 96, 96,
+                        bgra.AlphaType == SkiaSharp.SKAlphaType.Premul ? PixelFormats.Pbgra32 : PixelFormats.Bgra32,
+                        null, bgra.GetPixels(), bgra.ByteCount, bgra.RowBytes);
+                }
+                else image = BitmapDecoder.Create(file, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).Frames[0];
+                name = Path.GetFileNameWithoutExtension(dialog.FileName);
+            }
+            var bitmap = new FormatConvertedBitmap(image, PixelFormats.Bgra32, null, 0);
+            bitmap.Freeze();
+            double scale = Math.Max(bitmap.PixelWidth / 1280d, bitmap.PixelHeight / 800d);
+            var size = new Size(bitmap.PixelWidth / scale, bitmap.PixelHeight / scale);
+            var shot = new MonitorShot(Int32Rect.Empty, bitmap, name);
+            new CaptureSession(settings, trayIcon).StartWithPreviousCapture(new LastCapture(shot, size, new Rect(size), Array.Empty<Snappo.Editor.Annotations.Annotation>()));
+        }
+        catch (Exception ex) { trayIcon.ShowError("Couldn't open the image", ex.Message); }
+        finally { isCapturePending = false; }
+    }
+
     private void ShowSettings()
     {
         if (openSettingsWindow is not null)
@@ -178,15 +221,6 @@ public partial class App : Application
     private void OnSettingsSaved(AppSettings savedSettings)
     {
         settings = savedSettings;
-
-        try
-        {
-            ApplyHotkeySettings();
-        }
-        catch (Win32Exception problem)
-        {
-            trayIcon?.ShowError("Hotkeys unavailable", problem.Message);
-        }
     }
 
     private void OpenScreenshotsFolder()
@@ -222,7 +256,7 @@ public partial class App : Application
                 ShowActivated = false,   // never steals focus or activates
             };
 
-            warmupOverlay.Show();
+            warmupOverlay.ShowForCapture();
             warmupOverlay.RunWarmUpRenderPass();
         }
         catch

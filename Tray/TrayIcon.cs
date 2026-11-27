@@ -24,6 +24,8 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
     {
         TakeScreenshot = 1,
         ContinueEditing,
+        OpenImage,
+        PasteImage,
         OpenFolder,
         Settings,
         Exit,
@@ -33,6 +35,7 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
 
     private readonly HwndSource messageWindow;
     private readonly IntPtr iconHandle;
+    public event Action<bool>? ImportRequested;
     private readonly Action takeScreenshot;
     private readonly Action continueEditing;
     private readonly Action openScreenshotsFolder;
@@ -142,6 +145,8 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
             uint continueFlags = LastCaptureMemory.Value is null ? NativeMethods.MenuGrayed : NativeMethods.MenuString;
 
             AddItem(menu, NativeMethods.MenuString, MenuCommand.TakeScreenshot, "Take screenshot");
+            AddItem(menu, NativeMethods.MenuString, MenuCommand.OpenImage, "Open image...");
+            AddItem(menu, NativeMethods.MenuString, MenuCommand.PasteImage, "Edit clipboard image");
             AddItem(menu, continueFlags, MenuCommand.ContinueEditing, "Continue editing last screenshot");
             AddItem(menu, NativeMethods.MenuString, MenuCommand.OpenFolder, "Open screenshots folder");
             AddItem(menu, NativeMethods.MenuString, MenuCommand.Settings, "Settings...");
@@ -174,6 +179,8 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
     {
         switch (command)
         {
+            case MenuCommand.OpenImage: ImportRequested?.Invoke(false); break;
+            case MenuCommand.PasteImage: ImportRequested?.Invoke(true); break;
             case MenuCommand.TakeScreenshot: takeScreenshot(); break;
             case MenuCommand.ContinueEditing: continueEditing(); break;
             case MenuCommand.OpenFolder: openScreenshotsFolder(); break;
