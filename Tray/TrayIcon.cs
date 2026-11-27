@@ -28,6 +28,7 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
         PasteImage,
         OpenFolder,
         Settings,
+        CheckForUpdates,
         Exit,
     }
 
@@ -36,6 +37,7 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
     private readonly HwndSource messageWindow;
     private readonly IntPtr iconHandle;
     public event Action<bool>? ImportRequested;
+    public event Action? UpdateCheckRequested;
     private readonly Action takeScreenshot;
     private readonly Action continueEditing;
     private readonly Action openScreenshotsFolder;
@@ -150,6 +152,7 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
             AddItem(menu, continueFlags, MenuCommand.ContinueEditing, "Continue editing last screenshot");
             AddItem(menu, NativeMethods.MenuString, MenuCommand.OpenFolder, "Open screenshots folder");
             AddItem(menu, NativeMethods.MenuString, MenuCommand.Settings, "Settings...");
+            AddItem(menu, NativeMethods.MenuString, MenuCommand.CheckForUpdates, "Check for updates...");
             NativeMethods.AppendMenu(menu, NativeMethods.MenuSeparator, UIntPtr.Zero, null);
             AddItem(menu, NativeMethods.MenuString, MenuCommand.Exit, "Exit");
             NativeMethods.SetMenuDefaultItem(menu, (uint)MenuCommand.TakeScreenshot, 0);
@@ -185,6 +188,7 @@ internal sealed class TrayIcon : IUserNotifier, IDisposable
             case MenuCommand.ContinueEditing: continueEditing(); break;
             case MenuCommand.OpenFolder: openScreenshotsFolder(); break;
             case MenuCommand.Settings: openSettings(); break;
+            case MenuCommand.CheckForUpdates: UpdateCheckRequested?.Invoke(); break;
             case MenuCommand.Exit: exitApp(); break;
         }
     }

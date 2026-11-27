@@ -53,6 +53,7 @@ public partial class App : Application
             exitApp: ExitApp);
 
         trayIcon.ImportRequested += ImportImage;
+        trayIcon.UpdateCheckRequested += CheckForUpdates;
 
         hotkeyManager = new HotkeyManager(Dispatcher);
         hotkeyManager.ActionTriggered += OnHotkeyTriggered;
@@ -202,6 +203,41 @@ public partial class App : Application
         }
         catch (Exception ex) { trayIcon.ShowError("Couldn't open the image", ex.Message); }
         finally { isCapturePending = false; }
+    }
+
+    private bool checkingForUpdates;
+
+    private async void CheckForUpdates()
+    {
+        if (checkingForUpdates) return;
+        checkingForUpdates = true;
+        try
+        {
+            var installed = typeof(App).Assembly.GetName().Version!;
+            var (latest, tag) = await Updates.ReleaseChecker.GetLatestAsync();
+            if (IsExiting) return;
+
+            if (latest > installed)
+            {
+                if (MessageBox.Show($"You have Snappo {installed.ToString(3)}. {tag} is available. Open its download page?",
+                    "Snappo updates", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
+                {
+                    Process.Start(new ProcessStartInfo(Updates.ReleaseChecker.ReleasesPage + "/tag/" + Uri.EscapeDataString(tag))
+                        { UseShellExecute = true });
+                }
+            }
+            else
+            {
+                MessageBox.Show($"Installed: {installed.ToString(3)}\nLatest public release: {tag}\n\nNo newer release is available.",
+                    "Snappo updates", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        catch (Exception error)
+        {
+            if (!IsExiting) MessageBox.Show("Couldn't check or open the release. Try again later.\n\n" + error.Message,
+                "Snappo updates", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { checkingForUpdates = false; }
     }
 
     private void ShowSettings()

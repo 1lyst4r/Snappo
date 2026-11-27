@@ -23,6 +23,8 @@ internal static class Program
         CheckShapeAfterCrop(source);
         CheckSavedImages(source);
         CheckHotkeys();
+        Require(Updates.ReleaseChecker.ParseVersion("v1.3.0") == new Version(1, 3, 0, 0), "Release and assembly versions must compare equally.");
+        Require(Updates.ReleaseChecker.ParseVersion("1.10") > Updates.ReleaseChecker.ParseVersion("v1.9.9"), "Update ordering must be numeric.");
         var text = new TextAnnotation(new Point(), Colors.Red, 20);
         text.Append("e\u0301");
         text.RemoveLastCharacter();
