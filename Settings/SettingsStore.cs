@@ -21,6 +21,8 @@ internal static class SettingsStore
                 AppSettings settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
                 settings.Hotkeys ??= new();   // "Hotkeys": null in a hand-edited file
                 settings.SaveFolder ??= AppSettings.DefaultSaveFolder;
+                if (Array.IndexOf(AppSettings.CaptureDelayOptions, settings.CaptureDelaySeconds) < 0)
+                    settings.CaptureDelaySeconds = 0;
                 return settings;
             }
         }

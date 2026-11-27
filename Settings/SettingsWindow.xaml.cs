@@ -16,14 +16,13 @@ public partial class SettingsWindow : Window
 
     private const int JpegFormatIndex = 1;
 
-    private static readonly int[] CaptureDelayOptions = { 0, 3, 5, 10 };
-
     private readonly AppSettings currentSettings;
     private readonly HotkeyManager hotkeyManager;
     private readonly Action<AppSettings> onSettingsSaved;
 
     private HotkeyTrigger chosenCaptureTrigger;
     private bool isRecordingHotkey;
+    private readonly bool startupWasEnabled;
 
     private Key? modifierBeingHeld;
 
@@ -40,15 +39,17 @@ public partial class SettingsWindow : Window
         KeepSelectionCheckBox.IsChecked = settings.KeepSelectedAreaPosition;
         CaptureCursorCheckBox.IsChecked = settings.CaptureCursor;
         SaveFolderTextBox.Text = settings.GetSaveFolderOrDefault();
-        CaptureDelayComboBox.SelectedIndex = Math.Max(0, Array.IndexOf(CaptureDelayOptions, settings.CaptureDelaySeconds));
+        CaptureDelayComboBox.SelectedIndex = Math.Max(0, Array.IndexOf(AppSettings.CaptureDelayOptions, settings.CaptureDelaySeconds));
 
         try
         {
-            StartupCheckBox.IsChecked = StartupRegistration.IsEnabled();
+            startupWasEnabled = StartupRegistration.IsEnabled();
+            StartupCheckBox.IsChecked = startupWasEnabled;
         }
         catch (Exception)
         {
-            StartupCheckBox.IsChecked = false;   // never let a registry read failure stop the window from opening
+            StartupCheckBox.IsEnabled = false;
+            StartupCheckBox.ToolTip = "The Windows startup setting is unavailable.";
         }
 
         // Hotkeys
@@ -64,6 +65,7 @@ public partial class SettingsWindow : Window
         QualitySlider.ValueChanged += (_, _) => UpdateQualityControls();
 
         SourceInitialized += (_, _) => RenderModes.UseSoftware(this);
+        Deactivated += (_, _) => { if (isRecordingHotkey) StopRecording(); };
         Closed += (_, _) => hotkeyManager.IsPaused = false;
     }
 
@@ -120,7 +122,7 @@ public partial class SettingsWindow : Window
 
         Key releasedKey = NormalizeKey(e);
 
-        // Windows never sends a key-down for PrintScreen, only the key-up.
+        // Some keyboards only send a key-up for PrintScreen.
         if (releasedKey == Key.Snapshot)
         {
             modifierBeingHeld = null;
@@ -146,7 +148,11 @@ public partial class SettingsWindow : Window
             _ => SideMouseButton.None,
         };
 
-        if (sideButton == SideMouseButton.None) return;
+        if (sideButton == SideMouseButton.None)
+        {
+            if (!HotkeyButton.IsMouseOver) StopRecording();
+            return;
+        }
 
         e.Handled = true;
         TryAcceptTrigger(HotkeyTrigger.ForMouse(sideButton, Keyboard.Modifiers));
@@ -223,6 +229,8 @@ public partial class SettingsWindow : Window
     }
 
     // Save
+    private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();
+
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         string chosenFolder;
@@ -230,6 +238,11 @@ public partial class SettingsWindow : Window
         try
         {
             chosenFolder = Path.GetFullPath(SaveFolderTextBox.Text.Trim());   // throws for empty or invalid paths
+            if (File.Exists(chosenFolder))
+            {
+                ShowWarning("Choose a folder instead of a file.");
+                return;
+            }
         }
         catch (Exception)
         {
@@ -243,27 +256,41 @@ public partial class SettingsWindow : Window
         updatedSettings.ShowSaveNotification = NotificationCheckBox.IsChecked == true;
         updatedSettings.KeepSelectedAreaPosition = KeepSelectionCheckBox.IsChecked == true;
         updatedSettings.CaptureCursor = CaptureCursorCheckBox.IsChecked == true;
-        updatedSettings.CaptureDelaySeconds = CaptureDelayOptions[Math.Max(0, CaptureDelayComboBox.SelectedIndex)];
+        updatedSettings.CaptureDelaySeconds = AppSettings.CaptureDelayOptions[Math.Max(0, CaptureDelayComboBox.SelectedIndex)];
         updatedSettings.ImageFormat = FormatComboBox.SelectedIndex == JpegFormatIndex ? SaveImageFormat.Jpeg : SaveImageFormat.Png;
         updatedSettings.JpegQuality = (int)QualitySlider.Value;
 
+        bool changedStartup = false;
+        bool changedHotkey = false;
+        bool enableStartup = StartupCheckBox.IsChecked == true;
         try
         {
-            StartupRegistration.SetEnabled(StartupCheckBox.IsChecked == true);
-        }
-        catch (Exception problem)
-        {
-            ShowWarning("Couldn't update the Windows startup setting: " + problem.Message);
-            return;
-        }
-
-        try
-        {
+            if (chosenCaptureTrigger != currentSettings.GetTrigger(HotkeyAction.Capture))
+            {
+                hotkeyManager.SetTrigger(HotkeyAction.Capture, chosenCaptureTrigger);
+                changedHotkey = true;
+            }
+            if (StartupCheckBox.IsEnabled && enableStartup != startupWasEnabled)
+            {
+                StartupRegistration.SetEnabled(enableStartup);
+                changedStartup = true;
+            }
             SettingsStore.Save(updatedSettings);
         }
         catch (Exception problem)
         {
-            ShowWarning("Couldn't save your settings: " + problem.Message);
+            string message = "Couldn't save your settings: " + problem.Message;
+            if (changedStartup)
+            {
+                try { StartupRegistration.SetEnabled(startupWasEnabled); }
+                catch (Exception rollback) { message += "\nCouldn't restore the startup setting: " + rollback.Message; }
+            }
+            if (changedHotkey)
+            {
+                try { hotkeyManager.SetTrigger(HotkeyAction.Capture, currentSettings.GetTrigger(HotkeyAction.Capture)); }
+                catch (Exception rollback) { message += "\nCouldn't restore the previous hotkey: " + rollback.Message; }
+            }
+            ShowWarning(message);
             return;
         }
 

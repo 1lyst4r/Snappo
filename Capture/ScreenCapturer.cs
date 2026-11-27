@@ -23,6 +23,11 @@ internal static class ScreenCapturer
             shots.Add(new MonitorShot(bounds, CaptureRegion(bounds, includeCursor)));
         }
 
+        if (shots.Count == 0)
+        {
+            throw new InvalidOperationException("Windows didn't report an available display. Try again after connecting a monitor.");
+        }
+
         return shots;
     }
 
@@ -84,12 +89,22 @@ internal static class ScreenCapturer
     private static BitmapSource CaptureRegion(Int32Rect region, bool includeCursor)
     {
         IntPtr screenContext = NativeMethods.GetDC(IntPtr.Zero);
+        if (screenContext == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Could not access the desktop.");
+        }
+
         IntPtr memoryContext = NativeMethods.CreateCompatibleDC(screenContext);
         IntPtr dibHandle = IntPtr.Zero;
         IntPtr originalObject = IntPtr.Zero;
 
         try
         {
+            if (memoryContext == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("Could not create a device context for the screenshot.");
+            }
+
             var header = new NativeMethods.BitmapInfoHeader
             {
                 Size = Marshal.SizeOf<NativeMethods.BitmapInfoHeader>(),
@@ -106,11 +121,15 @@ internal static class ScreenCapturer
             }
 
             originalObject = NativeMethods.SelectObject(memoryContext, dibHandle);
+            if (originalObject == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("Could not select the screenshot buffer.");
+            }
 
             bool copied = NativeMethods.BitBlt(
                 memoryContext, 0, 0, region.Width, region.Height,
                 screenContext, region.X, region.Y,
-                NativeMethods.CopySourceToDestination);
+                NativeMethods.CopySourceToDestination | NativeMethods.CaptureLayeredWindows);
 
             if (!copied)
             {
@@ -122,11 +141,16 @@ internal static class ScreenCapturer
                 DrawCursorOnto(memoryContext, region);
             }
 
-            int stride = region.Width * BytesPerPixel;
+            if (!NativeMethods.GdiFlush())
+            {
+                throw new InvalidOperationException("Windows didn't finish drawing the screenshot.");
+            }
+
+            int stride = checked(region.Width * BytesPerPixel);
 
             BitmapSource bitmap = BitmapSource.Create(
                 region.Width, region.Height, 96, 96, PixelFormats.Bgr32, null,
-                pixelData, stride * region.Height, stride);
+                pixelData, checked(stride * region.Height), stride);
 
             bitmap.Freeze();   // frozen bitmaps are cheaper to render and safe to share between threads
             return bitmap;
@@ -135,7 +159,7 @@ internal static class ScreenCapturer
         {
             if (originalObject != IntPtr.Zero) NativeMethods.SelectObject(memoryContext, originalObject);
             if (dibHandle != IntPtr.Zero) NativeMethods.DeleteObject(dibHandle);
-            NativeMethods.DeleteDC(memoryContext);
+            if (memoryContext != IntPtr.Zero) NativeMethods.DeleteDC(memoryContext);
             NativeMethods.ReleaseDC(IntPtr.Zero, screenContext);
         }
     }

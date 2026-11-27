@@ -25,6 +25,7 @@ internal sealed class AppSettings
     public string SaveFolder { get; set; } = DefaultSaveFolder;
 
     public int CaptureDelaySeconds { get; set; }
+    internal static readonly int[] CaptureDelayOptions = { 0, 3, 5, 10 };
 
     // Hotkeys
     public Dictionary<string, string> Hotkeys { get; set; } = new();

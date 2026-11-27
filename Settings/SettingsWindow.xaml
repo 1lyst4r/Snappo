@@ -15,7 +15,7 @@
             <Button DockPanel.Dock="Left" Content="Reset to Defaults" Padding="10,5" Click="ResetToDefaultsButton_Click" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Save" IsDefault="True" Width="80" Padding="0,5" Click="SaveButton_Click" />
-                <Button Content="Cancel" IsCancel="True" Width="80" Padding="0,5" Margin="8,0,0,0" />
+                <Button Content="Cancel" IsCancel="True" Click="CancelButton_Click" Width="80" Padding="0,5" Margin="8,0,0,0" />
             </StackPanel>
         </DockPanel>
 

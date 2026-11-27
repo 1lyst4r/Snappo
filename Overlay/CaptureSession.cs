@@ -4,7 +4,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using Snappo.Capture;
 using Snappo.Editor;
 using Snappo.Interop;
@@ -22,7 +21,8 @@ internal enum FinishAction
 
 internal sealed class CaptureSession
 {
-    private static CaptureSession? currentSession;
+    private static volatile CaptureSession? currentSession;
+    private static volatile bool choosingSavePath;
 
     // Pooled overlay windows
     private static readonly Dictionary<Int32Rect, OverlayWindow> pooledOverlays = new();
@@ -39,10 +39,7 @@ internal sealed class CaptureSession
 
     public AppSettings Settings => settings;
 
-    // True while reopening the last screenshot, so the overlay doesn't also apply the remembered selection.
-    public bool IsContinuingEdit { get; private set; }
-
-    public static bool IsOpen => currentSession is not null;
+    public static bool IsOpen => currentSession is not null || choosingSavePath;
 
     public static void AbortCurrentSession() => currentSession?.CloseAllOverlays();
 
@@ -53,20 +50,22 @@ internal sealed class CaptureSession
         try
         {
             IReadOnlyList<MonitorShot> shots = await Task.Run(() => ScreenCapturer.CaptureAllMonitors(settings.CaptureCursor));
+            if (currentSession != this || App.IsExiting) return;
 
             RetireStalePooledOverlays(shots);
 
             foreach (MonitorShot shot in shots)
             {
-                overlays.Add(RentOverlay(shot));
+                overlays.Add(RentOverlay(shot, shot.Bounds));
             }
 
             foreach (OverlayWindow overlay in overlays)
             {
-                overlay.Show();
+                overlay.ShowForCapture();
             }
 
-            FindOverlayUnderCursor()?.BringToFront();
+            OverlayWindow? selected = overlays.FirstOrDefault(overlay => overlay.RestoreRememberedSelection());
+            (selected ?? FindOverlayUnderCursor())?.BringToFront();
         }
         catch
         {
@@ -77,15 +76,15 @@ internal sealed class CaptureSession
 
     // Pooling
 
-    private OverlayWindow RentOverlay(MonitorShot shot)
+    private OverlayWindow RentOverlay(MonitorShot shot, Int32Rect displayBounds)
     {
-        if (pooledOverlays.Remove(shot.Bounds, out OverlayWindow? pooled))
+        if (pooledOverlays.Remove(displayBounds, out OverlayWindow? pooled))
         {
             pooled.RearmForCapture(shot, this);
             return pooled;
         }
 
-        return new OverlayWindow(shot, this);
+        return new OverlayWindow(shot, this, displayBounds);
     }
 
     private static void RetireStalePooledOverlays(IReadOnlyList<MonitorShot> currentShots)
@@ -102,17 +101,23 @@ internal sealed class CaptureSession
     public void StartWithPreviousCapture(LastCapture previous)
     {
         currentSession = this;
-        IsContinuingEdit = true;
 
         try
         {
-            OverlayWindow overlay = RentOverlay(previous.MonitorShot);
-            overlays.Add(overlay);
-            overlay.Show();
+            List<Int32Rect> displays = ScreenCapturer.GetMonitorBounds();
+            if (displays.Count == 0) throw new InvalidOperationException("Windows didn't report an available display.");
 
-            overlay.Dispatcher.InvokeAsync(
-                () => overlay.RestoreAnnotatedSelection(previous.Selection, previous.Annotations),
-                DispatcherPriority.Loaded);
+            Int32Rect display = previous.MonitorShot.Bounds;
+            if (!displays.Contains(display))
+            {
+                NativeMethods.GetCursorPos(out NativeMethods.NativePoint cursor);
+                display = displays.FirstOrDefault(bounds => ContainsPoint(bounds, cursor.X, cursor.Y), displays[0]);
+            }
+
+            OverlayWindow overlay = RentOverlay(previous.MonitorShot, display);
+            overlays.Add(overlay);
+            overlay.ShowForCapture(previous.EditorSize);
+            overlay.RestoreAnnotatedSelection(previous.Selection, previous.Annotations);
 
             overlay.BringToFront();
         }
@@ -166,14 +171,21 @@ internal sealed class CaptureSession
 
     private async Task SaveToFileAsync(BitmapSource image)
     {
-        string? chosenPath = ScreenshotSaver.PromptForSavePath(settings);
-        if (chosenPath is null)
-        {
-            return;
-        }
-
         try
         {
+            string? chosenPath;
+            choosingSavePath = true;
+            try
+            {
+                chosenPath = ScreenshotSaver.PromptForSavePath(settings);
+            }
+            finally
+            {
+                choosingSavePath = false;
+            }
+
+            if (chosenPath is null) return;
+
             await ScreenshotSaver.SaveToPathAsync(image, chosenPath, settings);
 
             if (settings.ShowSaveNotification)
@@ -193,14 +205,19 @@ internal sealed class CaptureSession
 
         foreach (OverlayWindow overlay in overlays)
         {
-            if (overlay.ContainsScreenPoint(cursor.X, cursor.Y)) return overlay;
+            if (ContainsPoint(overlay.MonitorBounds, cursor.X, cursor.Y)) return overlay;
         }
 
         return overlays.Count > 0 ? overlays[0] : null;
     }
 
+    private static bool ContainsPoint(Int32Rect bounds, int x, int y) =>
+        x >= bounds.X && x < bounds.X + bounds.Width && y >= bounds.Y && y < bounds.Y + bounds.Height;
+
     private void CloseAllOverlays()
     {
+        if (currentSession != this) return;
+
         foreach (OverlayWindow overlay in overlays)
         {
             overlay.ReleaseForPool();
@@ -209,7 +226,6 @@ internal sealed class CaptureSession
 
         overlays.Clear();
         currentSession = null;
-        IsContinuingEdit = false;
 
         MemoryTrimmer.TrimWhenIdle();
     }

@@ -58,7 +58,7 @@ internal sealed class AnnotationToolbar : Border
         Padding = new Thickness(3);
         Cursor = Cursors.Arrow;
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        var row = new WrapPanel { Orientation = Orientation.Horizontal };
 
         foreach (ToolButtonInfo info in ToolButtons)
         {

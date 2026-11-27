@@ -17,6 +17,7 @@ internal sealed class HotkeyManager : IDisposable
     private const int AltKeyCode = 0x12;
     private const int LeftWindowsKeyCode = 0x5B;
     private const int RightWindowsKeyCode = 0x5C;
+    private const int PrintScreenKeyCode = 0x2C;
     private const int KeyIsDownBit = 0x8000;
 
     private const int MouseDataOffset = 8;
@@ -36,17 +37,20 @@ internal sealed class HotkeyManager : IDisposable
     private uint hookThreadId;
     private int hookErrorCode;
 
-    private volatile KeyValuePair<HotkeyAction, HotkeyTrigger>[] activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
+    private volatile KeyValuePair<HotkeyAction, HotkeyTrigger>[] requestedTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
+    private KeyValuePair<HotkeyAction, HotkeyTrigger>[] activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
 
     // Only touched on the hook thread.
     private IntPtr keyboardHook = IntPtr.Zero;
     private IntPtr mouseHook = IntPtr.Zero;
     private int swallowedKeyCode;                                   // lets us also swallow the matching key-up and auto-repeats
+    private bool sawPrintScreenDown;
     private SideMouseButton swallowedMouseButton = SideMouseButton.None;
 
     public event Action<HotkeyAction>? ActionTriggered;
 
-    public bool IsPaused { get; set; }
+    private volatile bool isPaused;
+    public bool IsPaused { get => isPaused; set => isPaused = value; }
 
     public Func<bool>? ShouldPassKeysThrough { get; set; }
 
@@ -67,17 +71,16 @@ internal sealed class HotkeyManager : IDisposable
 
     public void SetTrigger(HotkeyAction action, HotkeyTrigger trigger)
     {
-        triggersByAction[action] = trigger;
-        activeTriggers = triggersByAction.ToArray();
+        var proposed = new Dictionary<HotkeyAction, HotkeyTrigger>(triggersByAction) { [action] = trigger };
+        requestedTriggers = proposed.ToArray();
         UpdateHooksOnHookThread();
+        triggersByAction[action] = trigger;
     }
 
     public void Dispose()
     {
-        triggersByAction.Clear();
-        activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
         NativeMethods.PostThreadMessage(hookThreadId, QuitMessage, IntPtr.Zero, IntPtr.Zero);
-        hookThread.Join(1000);
+        if (hookThread.Join(1000)) hookThreadAnswered.Dispose();
     }
 
     private void UpdateHooksOnHookThread()
@@ -111,40 +114,46 @@ internal sealed class HotkeyManager : IDisposable
             }
         }
 
-        activeTriggers = Array.Empty<KeyValuePair<HotkeyAction, HotkeyTrigger>>();
-        InstallOnlyTheHooksWeNeed();   // removes both hooks
+        if (keyboardHook != IntPtr.Zero) NativeMethods.UnhookWindowsHookEx(keyboardHook);
+        if (mouseHook != IntPtr.Zero) NativeMethods.UnhookWindowsHookEx(mouseHook);
     }
 
     private void InstallOnlyTheHooksWeNeed()
     {
-        KeyValuePair<HotkeyAction, HotkeyTrigger>[] triggers = activeTriggers;
+        KeyValuePair<HotkeyAction, HotkeyTrigger>[] triggers = requestedTriggers;
         bool needsKeyboardHook = triggers.Any(pair => !pair.Value.UsesMouse);
         bool needsMouseHook = triggers.Any(pair => pair.Value.UsesMouse);
 
-        keyboardHook = UpdateHook(keyboardHook, needsKeyboardHook, NativeMethods.KeyboardHookId, keyboardCallback);
-        mouseHook = UpdateHook(mouseHook, needsMouseHook, NativeMethods.MouseHookId, mouseCallback);
+        if (needsKeyboardHook && keyboardHook == IntPtr.Zero)
+        {
+            keyboardHook = InstallHook(NativeMethods.KeyboardHookId, keyboardCallback);
+        }
+        if (needsMouseHook && mouseHook == IntPtr.Zero)
+        {
+            mouseHook = InstallHook(NativeMethods.MouseHookId, mouseCallback);
+        }
+
+        if (hookErrorCode == 0) activeTriggers = triggers;
+        if (keyboardHook != IntPtr.Zero && !activeTriggers.Any(pair => !pair.Value.UsesMouse))
+        {
+            NativeMethods.UnhookWindowsHookEx(keyboardHook);
+            keyboardHook = IntPtr.Zero;
+            swallowedKeyCode = 0;
+            sawPrintScreenDown = false;
+        }
+        if (mouseHook != IntPtr.Zero && !activeTriggers.Any(pair => pair.Value.UsesMouse))
+        {
+            NativeMethods.UnhookWindowsHookEx(mouseHook);
+            mouseHook = IntPtr.Zero;
+            swallowedMouseButton = SideMouseButton.None;
+        }
     }
 
-    private IntPtr UpdateHook(IntPtr currentHook, bool isNeeded, int hookId, NativeMethods.LowLevelHookCallback callback)
+    private IntPtr InstallHook(int hookId, NativeMethods.LowLevelHookCallback callback)
     {
-        if (isNeeded && currentHook == IntPtr.Zero)
-        {
-            IntPtr newHook = NativeMethods.SetWindowsHookEx(hookId, callback, NativeMethods.GetModuleHandle(null), 0);
-            if (newHook == IntPtr.Zero)
-            {
-                hookErrorCode = Marshal.GetLastWin32Error();
-            }
-
-            return newHook;
-        }
-
-        if (!isNeeded && currentHook != IntPtr.Zero)
-        {
-            NativeMethods.UnhookWindowsHookEx(currentHook);
-            return IntPtr.Zero;
-        }
-
-        return currentHook;
+        IntPtr hook = NativeMethods.SetWindowsHookEx(hookId, callback, NativeMethods.GetModuleHandle(null), 0);
+        if (hook == IntPtr.Zero) hookErrorCode = Marshal.GetLastWin32Error();
+        return hook;
     }
 
     // Keyboard
@@ -157,8 +166,14 @@ internal sealed class HotkeyManager : IDisposable
             bool isKeyUp = message == NativeMethods.KeyUpMessage || message == NativeMethods.SystemKeyUpMessage;
 
             int keyCode = Marshal.ReadInt32(eventData);
+            bool printScreenUpOnly = false;
+            if (keyCode == PrintScreenKeyCode)
+            {
+                printScreenUpOnly = isKeyUp && !sawPrintScreenDown;
+                sawPrintScreenDown = isKeyDown;
+            }
 
-            if (keyCode == swallowedKeyCode)
+            if (swallowedKeyCode != 0 && keyCode == swallowedKeyCode)
             {
                 if (isKeyUp)
                 {
@@ -168,7 +183,7 @@ internal sealed class HotkeyManager : IDisposable
                 return (IntPtr)1;
             }
 
-            if (isKeyDown && IsListening)
+            if ((isKeyDown || printScreenUpOnly) && IsListening)
             {
                 Key key = KeyInterop.KeyFromVirtualKey(keyCode);
 
@@ -176,7 +191,7 @@ internal sealed class HotkeyManager : IDisposable
 
                 if (TryFindAction(key, otherModifiers, out HotkeyAction action))
                 {
-                    swallowedKeyCode = keyCode;
+                    if (isKeyDown) swallowedKeyCode = keyCode;
                     RaiseOnUiThread(action);
                     return (IntPtr)1;
                 }

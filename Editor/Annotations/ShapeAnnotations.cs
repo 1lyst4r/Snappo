@@ -56,7 +56,7 @@ internal sealed class BlurAnnotation : TwoPointAnnotation
         }
 
         drawing.PushClip(new RectangleGeometry(area));
-        drawing.DrawImage(context.PixelatedScreenshot.Value, context.ScreenBounds);
+        context.PixelatedScreenshot.Value.Draw(drawing, context.ScreenBounds);
         drawing.Pop();
     }
 }

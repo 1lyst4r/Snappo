@@ -115,7 +115,8 @@ internal sealed record HotkeyTrigger(ModifierKeys Modifiers, Key Key, SideMouseB
             return true;
         }
 
-        if (Enum.TryParse(mainPart, ignoreCase: true, out Key parsedKey) && parsedKey != Key.None)
+        if (!int.TryParse(mainPart, out _) && Enum.TryParse(mainPart, ignoreCase: true, out Key parsedKey)
+            && Enum.IsDefined(parsedKey) && KeyInterop.VirtualKeyFromKey(parsedKey) != 0)
         {
             trigger = ForKey(parsedKey, modifiers);
             return true;

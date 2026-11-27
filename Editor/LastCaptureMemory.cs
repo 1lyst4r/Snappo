@@ -5,7 +5,7 @@ using Snappo.Editor.Annotations;
 
 namespace Snappo.Editor;
 
-internal sealed record LastCapture(MonitorShot MonitorShot, Rect Selection, IReadOnlyList<Annotation> Annotations);
+internal sealed record LastCapture(MonitorShot MonitorShot, Size EditorSize, Rect Selection, IReadOnlyList<Annotation> Annotations);
 
 internal static class LastCaptureMemory
 {

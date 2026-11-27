@@ -5,11 +5,25 @@ using System.Windows.Media.Imaging;
 
 namespace Snappo.Editor;
 
+internal sealed record PixelatedImage(BitmapSource Bitmap, double WidthScale, double HeightScale)
+{
+    public void Draw(DrawingContext drawing, Rect bounds)
+    {
+        // The last row or column can be a partial block. Keep the grid aligned with the source pixels.
+        var destination = new Rect(bounds.X, bounds.Y, bounds.Width * WidthScale, bounds.Height * HeightScale);
+        var blocks = new DrawingGroup();
+        RenderOptions.SetBitmapScalingMode(blocks, BitmapScalingMode.NearestNeighbor);
+        blocks.Children.Add(new ImageDrawing(Bitmap, destination));
+        blocks.Freeze();
+        drawing.DrawDrawing(blocks);
+    }
+}
+
 internal static class ImagePixelator
 {
     private const int BytesPerPixel = 4;
 
-    public static BitmapSource Pixelate(BitmapSource source, int blockSize)
+    public static PixelatedImage Pixelate(BitmapSource source, int blockSize)
     {
         blockSize = Math.Max(2, blockSize);
 
@@ -27,7 +41,7 @@ internal static class ImagePixelator
         byte[] blockPixels = new byte[blocksAcross * blocksDown * BytesPerPixel];
 
         // Read one band of rows at a time instead of copying the whole screenshot into one huge array.
-        byte[] band = new byte[stride * blockSize];
+        byte[] band = new byte[stride * Math.Min(blockSize, height)];
         long[] totals = new long[blocksAcross * 3];
 
         for (int blockRow = 0; blockRow < blocksDown; blockRow++)
@@ -67,6 +81,6 @@ internal static class ImagePixelator
         BitmapSource result = BitmapSource.Create(
             blocksAcross, blocksDown, 96, 96, PixelFormats.Bgr32, null, blockPixels, blocksAcross * BytesPerPixel);
         result.Freeze();
-        return result;
+        return new PixelatedImage(result, (double)blocksAcross * blockSize / width, (double)blocksDown * blockSize / height);
     }
 }

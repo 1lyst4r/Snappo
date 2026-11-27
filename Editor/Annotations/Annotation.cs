@@ -49,14 +49,19 @@ internal abstract class TwoPointAnnotation : DragAnnotation
 
     public override bool IsWorthKeeping => (EndPoint - StartPoint).Length >= EditorDefaults.MinimumShapeSize;
 
-    protected Point ConstrainedEndPoint(RenderContext context)
+    public void CommitConstraint(Rect selection)
+    {
+        EndPoint = ConstrainedEndPoint(selection);
+        IsConstrained = false;
+    }
+
+    protected Point ConstrainedEndPoint(Rect selection)
     {
         if (!IsConstrained)
         {
             return EndPoint;
         }
 
-        Rect selection = context.SelectionBounds;
         Point constrained = ApplyConstraint(StartPoint, EndPoint, selection);
 
         return new Point(
@@ -64,7 +69,7 @@ internal abstract class TwoPointAnnotation : DragAnnotation
             Math.Clamp(constrained.Y, selection.Top, selection.Bottom));
     }
 
-    protected Rect EffectiveBounds(RenderContext context) => new(StartPoint, ConstrainedEndPoint(context));
+    protected Rect EffectiveBounds(RenderContext context) => new(StartPoint, ConstrainedEndPoint(context.SelectionBounds));
 
     protected virtual Point ApplyConstraint(Point startPoint, Point rawEndPoint, Rect selection)
     {

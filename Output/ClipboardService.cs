@@ -11,10 +11,22 @@ internal static class ClipboardService
 {
     private const int MaxAttempts = 10;
     private const int RetryDelayMilliseconds = 50;
+    private static readonly object QueueLock = new();
+    private static Task lastCopy = Task.CompletedTask;
 
     public static Task CopyImageAsync(BitmapSource frozenImage)
     {
-        var finished = new TaskCompletionSource();
+        lock (QueueLock)
+        {
+            // An older copy retrying a busy clipboard must finish before the next screenshot.
+            lastCopy = lastCopy.ContinueWith(_ => CopyOnStaThread(frozenImage), TaskScheduler.Default).Unwrap();
+            return lastCopy;
+        }
+    }
+
+    private static Task CopyOnStaThread(BitmapSource frozenImage)
+    {
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var clipboardThread = new Thread(() =>
         {

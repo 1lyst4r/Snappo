@@ -90,6 +90,7 @@ public partial class App : Application
         {
             singleInstanceMutex?.ReleaseMutex();
         }
+        singleInstanceMutex?.Dispose();
 
         base.OnExit(e);
     }
@@ -130,7 +131,7 @@ public partial class App : Application
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
             }
 
-            if (CaptureSession.IsOpen) return;   // "continue editing" may have opened one during the delay
+            if (IsExiting || CaptureSession.IsOpen) return;
 
             await new CaptureSession(settings, trayIcon).StartAsync();
         }
@@ -178,15 +179,6 @@ public partial class App : Application
     private void OnSettingsSaved(AppSettings savedSettings)
     {
         settings = savedSettings;
-
-        try
-        {
-            ApplyHotkeySettings();
-        }
-        catch (Win32Exception problem)
-        {
-            trayIcon?.ShowError("Hotkeys unavailable", problem.Message);
-        }
     }
 
     private void OpenScreenshotsFolder()
@@ -222,7 +214,7 @@ public partial class App : Application
                 ShowActivated = false,   // never steals focus or activates
             };
 
-            warmupOverlay.Show();
+            warmupOverlay.ShowForCapture();
             warmupOverlay.RunWarmUpRenderPass();
         }
         catch

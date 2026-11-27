@@ -158,6 +158,11 @@ internal static class NativeMethods
 
     // GDI (screen capture)
     public const uint CopySourceToDestination = 0x00CC0020;   // SRCCOPY
+    public const uint CaptureLayeredWindows = 0x40000000;     // CAPTUREBLT
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GdiFlush();
 
     [StructLayout(LayoutKind.Sequential)]
     public struct BitmapInfoHeader

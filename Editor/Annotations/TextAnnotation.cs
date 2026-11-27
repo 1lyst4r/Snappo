@@ -10,19 +10,19 @@ internal sealed class TextAnnotation : Annotation
     private static readonly Typeface TextTypeface = new(EditorDefaults.TextFontName);
 
     private readonly StringBuilder typedText = new();
-    private readonly double fontSize;
     private Brush brush;
     private Pen caretPen;
 
     public TextAnnotation(Point position, Color color, double fontSize)
     {
         Position = position;
-        this.fontSize = fontSize;
+        FontSize = fontSize;
         brush = DrawingTools.CreateBrush(color);
         caretPen = DrawingTools.CreatePen(color, 1.5, PenLineCap.Flat);
     }
 
     public Point Position { get; }
+    public double FontSize { get; set; }
 
     public bool IsEditing { get; set; }
 
@@ -42,8 +42,8 @@ internal sealed class TextAnnotation : Annotation
     {
         if (typedText.Length == 0) return;
 
-        bool endsWithSurrogatePair = typedText.Length >= 2 && char.IsLowSurrogate(typedText[typedText.Length - 1]);
-        typedText.Length -= endsWithSurrogatePair ? 2 : 1;
+        int[] starts = StringInfo.ParseCombiningCharacters(typedText.ToString());
+        typedText.Length = starts[^1];
     }
 
     public override void Draw(DrawingContext drawing, RenderContext context)
@@ -77,5 +77,5 @@ internal sealed class TextAnnotation : Annotation
     }
 
     private FormattedText CreateFormattedText(string text, double pixelsPerDip) => new(
-        text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextTypeface, fontSize, brush, pixelsPerDip);
+        text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, TextTypeface, FontSize, brush, pixelsPerDip);
 }
