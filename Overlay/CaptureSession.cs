@@ -45,16 +45,16 @@ internal sealed class CaptureSession
 
     public async Task StartAsync()
     {
-        string sourceApp = "Desktop";
         NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out uint pid);
-        try { using var process = System.Diagnostics.Process.GetProcessById((int)pid); sourceApp = process.ProcessName; }
-        catch (ArgumentException) { }
-        catch (System.ComponentModel.Win32Exception) { }
         currentSession = this;
 
         try
         {
-            IReadOnlyList<MonitorShot> shots = await Task.Run(() => ScreenCapturer.CaptureAllMonitors(settings.CaptureCursor));
+            var (shots, sourceApp) = await Task.Run(() =>
+            {
+                var images = ScreenCapturer.CaptureAllMonitors(settings.CaptureCursor);
+                return (images, GetSourceApp(pid));
+            });
             if (currentSession != this || App.IsExiting) return;
 
             RetireStalePooledOverlays(shots);
@@ -76,6 +76,32 @@ internal sealed class CaptureSession
         {
             CloseAllOverlays();
             throw;
+        }
+    }
+
+    private static string GetSourceApp(uint pid)
+    {
+        try { using var process = System.Diagnostics.Process.GetProcessById((int)pid); return process.ProcessName; }
+        catch (ArgumentException) { return "Desktop"; }
+        catch (System.ComponentModel.Win32Exception) { return "Desktop"; }
+    }
+
+    public void PrepareOverlays()
+    {
+        foreach (Int32Rect bounds in ScreenCapturer.GetMonitorBounds())
+        {
+            if (IsOpen || pooledOverlays.ContainsKey(bounds)) continue;
+            var overlay = new OverlayWindow(new MonitorShot(bounds, OverlayWindow.PlaceholderBitmap), this);
+            try
+            {
+                new System.Windows.Interop.WindowInteropHelper(overlay).EnsureHandle();
+                pooledOverlays.Add(bounds, overlay);
+            }
+            catch
+            {
+                overlay.CloseForGood();
+                throw;
+            }
         }
     }
 
@@ -232,6 +258,6 @@ internal sealed class CaptureSession
         overlays.Clear();
         currentSession = null;
 
-        MemoryTrimmer.TrimWhenIdle();
+
     }
 }

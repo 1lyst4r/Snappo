@@ -37,7 +37,7 @@ internal sealed class OverlayWindow : Window
     private const double ToolbarScreenMargin = 6;   // keep the toolbar this far from the monitor edge
     private const double HandleHitRadius = 10;      // generous hit target around each corner handle
 
-    private static readonly BitmapSource PlaceholderBitmap = CreatePlaceholderBitmap();
+    internal static readonly BitmapSource PlaceholderBitmap = CreatePlaceholderBitmap();
 
     private MonitorShot monitorShot;
     private CaptureSession session;
@@ -53,7 +53,6 @@ internal sealed class OverlayWindow : Window
     private readonly Canvas toolbarCanvas = new();
     private readonly Grid surface;
 
-    private readonly bool isWarmUp;
     private bool isClosingForGood;
 
     private IntPtr windowHandle;
@@ -81,12 +80,11 @@ internal sealed class OverlayWindow : Window
     private Point moveDragStartMouse;
     private Rect moveDragStartSelection;
 
-    public OverlayWindow(MonitorShot monitorShot, CaptureSession session, Int32Rect? displayBounds = null, bool isWarmUp = false)
+    public OverlayWindow(MonitorShot monitorShot, CaptureSession session, Int32Rect? displayBounds = null)
     {
         this.monitorShot = monitorShot;
         MonitorBounds = displayBounds ?? monitorShot.Bounds;
         this.session = session;
-        this.isWarmUp = isWarmUp;
 
         committedLayer = new AnnotationLayer(BuildRenderContext);
         liveLayer = new AnnotationLayer(BuildRenderContext);
@@ -176,7 +174,7 @@ internal sealed class OverlayWindow : Window
     {
         base.OnClosing(e);
 
-        if (!isClosingForGood && !isWarmUp && !App.IsExiting)
+        if (!isClosingForGood && !App.IsExiting)
         {
             e.Cancel = true;     // e.g. Alt+F4: treat it like Esc instead of destroying a pooled window
             Dispatcher.BeginInvoke(new Action(session.Cancel));
@@ -211,7 +209,6 @@ internal sealed class OverlayWindow : Window
     // Things CaptureSession needs
     public void BringToFront()
     {
-        NativeMethods.ForceToForeground(windowHandle);
         Activate();
         Focus();
     }
@@ -238,22 +235,6 @@ internal sealed class OverlayWindow : Window
 
         selection = Rect.Empty;
         ShowSelection(null);
-    }
-
-    internal void RunWarmUpRenderPass()
-    {
-        UpdateLayout();   // make sure ActualWidth/ActualHeight are real numbers before we divide by them
-        if (ActualWidth < 1 || ActualHeight < 1)
-        {
-            return;
-        }
-
-        _ = pixelatedScreenshot.Value;
-
-        RenderContext context = BuildRenderContext();
-        var sampleShape = new RectangleAnnotation(new Point(1, 1), Colors.Red, EditorDefaults.LineThickness, filled: false);
-        sampleShape.UpdateDrag(new Point(4, 4));
-        ScreenshotRenderer.Render(monitorShot.Bitmap, context.ScreenBounds, new Annotation[] { sampleShape }, context);
     }
 
     // Window setup
@@ -656,7 +637,7 @@ internal sealed class OverlayWindow : Window
     // "Keep the selected area position"
     private void RememberSelectionIfEnabled()
     {
-        if (isWarmUp || !session.Settings.KeepSelectedAreaPosition)
+        if (!session.Settings.KeepSelectedAreaPosition)
         {
             return;
         }
@@ -672,7 +653,7 @@ internal sealed class OverlayWindow : Window
 
     internal bool RestoreRememberedSelection()
     {
-        if (isWarmUp || phase != Phase.WaitingForSelection
+        if (phase != Phase.WaitingForSelection
             || !session.Settings.KeepSelectedAreaPosition)
         {
             return false;

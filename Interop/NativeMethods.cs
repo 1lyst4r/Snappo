@@ -79,10 +79,6 @@ internal static class NativeMethods
     [DllImport("kernel32.dll")]
     public static extern uint GetCurrentThreadId();
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool AttachThreadInput(uint threadToAttach, uint threadToAttachTo, [MarshalAs(UnmanagedType.Bool)] bool attach);
-
     [StructLayout(LayoutKind.Sequential)]
     public struct NativePoint
     {
@@ -97,27 +93,6 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool DestroyIcon(IntPtr iconHandle);
-
-    public static void ForceToForeground(IntPtr windowHandle)
-    {
-        IntPtr currentForeground = GetForegroundWindow();
-        if (currentForeground == windowHandle)
-        {
-            return;
-        }
-
-        uint foregroundThread = GetWindowThreadProcessId(currentForeground, out _);
-        uint ourThread = GetCurrentThreadId();
-        bool attached = foregroundThread != 0 && foregroundThread != ourThread
-                        && AttachThreadInput(ourThread, foregroundThread, true);
-
-        SetForegroundWindow(windowHandle);
-
-        if (attached)
-        {
-            AttachThreadInput(ourThread, foregroundThread, false);
-        }
-    }
 
     // Mouse cursor (for "Capture the cursor on a screenshot")
     public const int CursorIsShowing = 0x0001;    // CURSOR_SHOWING

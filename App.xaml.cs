@@ -244,42 +244,16 @@ public partial class App : Application
             return;
         }
 
-        OverlayWindow? warmupOverlay = null;
-
-        ScreenCapturer.WarmUp();   // the GDI screen-grab code is the slowest thing to run cold
-
         try
         {
-            var warmupSession = new CaptureSession(settings, trayIcon);
-            warmupOverlay = new OverlayWindow(CreateDummyMonitorShot(), warmupSession, isWarmUp: true)
-            {
-                ShowActivated = false,   // never steals focus or activates
-            };
-
-            warmupOverlay.ShowForCapture();
-            warmupOverlay.RunWarmUpRenderPass();
+            ScreenCapturer.WarmUp();
+            new CaptureSession(settings, trayIcon).PrepareOverlays();
         }
-        catch
+        catch (Exception)
         {
-        }
-        finally
-        {
-            warmupOverlay?.CloseForGood();
-            MemoryTrimmer.TrimWhenIdle();
+            // Capture can still create its windows on demand.
         }
     }
-
-    private static MonitorShot CreateDummyMonitorShot()
-    {
-        const int size = 8;
-        var pixels = new byte[size * size * 4];   // BGR32, left as zero; contents don't matter for a warm-up
-
-        BitmapSource bitmap = BitmapSource.Create(size, size, 96, 96, PixelFormats.Bgr32, null, pixels, size * 4);
-        bitmap.Freeze();
-
-        return new MonitorShot(new Int32Rect(-32000, -32000, size, size), bitmap);
-    }
-
     private void OnUnexpectedError(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         CaptureSession.AbortCurrentSession();   // never leave a dimmed screen behind
